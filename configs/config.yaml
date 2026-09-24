@@ -1,0 +1,32 @@
+audio:
+  sample_rate: 16000
+  duration_seconds: 5
+  mono: true
+
+corruption:
+  min_gap_ms: 40
+  max_gap_ms: 80
+  cumulative_gap_ms: 200
+
+stft:
+  # Initial values; update during reproduction experiments.
+  n_fft: 1024
+  hop_length: 120
+  win_length: 600
+
+model:
+  name: multiresunet
+  input_channels: 2
+  output_channels: 2
+  negative_slope: 0.01
+
+optimization:
+  epochs: 5000
+  learning_rate: 0.01
+  optimizer: Adam
+  noise_variance: 0.1
+  perturbation_variance: 0.03
+
+loss:
+  alpha_mse: 1.0
+  alpha_mss: 0.1
