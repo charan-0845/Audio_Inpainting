@@ -1,0 +1,16 @@
+clip_id,source_path,sample_rate,duration_seconds,gap_ms,seed_idx,actual_seed,clean_path,corrupted_path,mask_path,num_gaps,cumulative_gap_samples,cumulative_gap_ms_actual
+synthetic_01,data\raw\synthetic_01.wav,16000,5,200.0,0,1648702353,data\clean\synthetic_01.wav,data\corrupted\synthetic_01_200ms_s0.wav,data\masks\synthetic_01_200ms_s0.npy,3,3200,200.0
+synthetic_01,data\raw\synthetic_01.wav,16000,5,400.0,0,380846467,data\clean\synthetic_01.wav,data\corrupted\synthetic_01_400ms_s0.wav,data\masks\synthetic_01_400ms_s0.npy,6,6400,400.0
+synthetic_01,data\raw\synthetic_01.wav,16000,5,600.0,0,412038282,data\clean\synthetic_01.wav,data\corrupted\synthetic_01_600ms_s0.wav,data\masks\synthetic_01_600ms_s0.npy,10,9600,600.0
+synthetic_01,data\raw\synthetic_01.wav,16000,5,800.0,0,934862771,data\clean\synthetic_01.wav,data\corrupted\synthetic_01_800ms_s0.wav,data\masks\synthetic_01_800ms_s0.npy,13,12800,800.0
+synthetic_01,data\raw\synthetic_01.wav,16000,5,1000.0,0,1838949968,data\clean\synthetic_01.wav,data\corrupted\synthetic_01_1000ms_s0.wav,data\masks\synthetic_01_1000ms_s0.npy,17,16000,1000.0
+synthetic_02,data\raw\synthetic_02.wav,16000,5,200.0,0,885391373,data\clean\synthetic_02.wav,data\corrupted\synthetic_02_200ms_s0.wav,data\masks\synthetic_02_200ms_s0.npy,3,3200,200.0
+synthetic_02,data\raw\synthetic_02.wav,16000,5,400.0,0,442257612,data\clean\synthetic_02.wav,data\corrupted\synthetic_02_400ms_s0.wav,data\masks\synthetic_02_400ms_s0.npy,5,6400,400.0
+synthetic_02,data\raw\synthetic_02.wav,16000,5,600.0,0,1557548137,data\clean\synthetic_02.wav,data\corrupted\synthetic_02_600ms_s0.wav,data\masks\synthetic_02_600ms_s0.npy,11,9600,600.0
+synthetic_02,data\raw\synthetic_02.wav,16000,5,800.0,0,811991008,data\clean\synthetic_02.wav,data\corrupted\synthetic_02_800ms_s0.wav,data\masks\synthetic_02_800ms_s0.npy,13,12800,800.0
+synthetic_02,data\raw\synthetic_02.wav,16000,5,1000.0,0,213329366,data\clean\synthetic_02.wav,data\corrupted\synthetic_02_1000ms_s0.wav,data\masks\synthetic_02_1000ms_s0.npy,17,16000,1000.0
+synthetic_03,data\raw\synthetic_03.wav,16000,5,200.0,0,2040148033,data\clean\synthetic_03.wav,data\corrupted\synthetic_03_200ms_s0.wav,data\masks\synthetic_03_200ms_s0.npy,3,3200,200.0
+synthetic_03,data\raw\synthetic_03.wav,16000,5,400.0,0,1406103100,data\clean\synthetic_03.wav,data\corrupted\synthetic_03_400ms_s0.wav,data\masks\synthetic_03_400ms_s0.npy,7,6400,400.0
+synthetic_03,data\raw\synthetic_03.wav,16000,5,600.0,0,164892870,data\clean\synthetic_03.wav,data\corrupted\synthetic_03_600ms_s0.wav,data\masks\synthetic_03_600ms_s0.npy,9,9600,600.0
+synthetic_03,data\raw\synthetic_03.wav,16000,5,800.0,0,571861646,data\clean\synthetic_03.wav,data\corrupted\synthetic_03_800ms_s0.wav,data\masks\synthetic_03_800ms_s0.npy,14,12800,800.0
+synthetic_03,data\raw\synthetic_03.wav,16000,5,1000.0,0,1381214883,data\clean\synthetic_03.wav,data\corrupted\synthetic_03_1000ms_s0.wav,data\masks\synthetic_03_1000ms_s0.npy,15,16000,1000.0

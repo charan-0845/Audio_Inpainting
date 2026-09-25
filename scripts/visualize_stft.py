@@ -28,7 +28,7 @@ import soundfile as sf
 import torch
 import yaml
 
-from src.audio.corruption import apply_mask, create_mask
+from src.audio.corruption import apply_mask, create_mask, extract_mask_from_audio
 from src.audio.loader import load_audio, make_synthetic_audio
 from src.audio.stft import (
     channels_to_stft,
@@ -58,6 +58,12 @@ def _parse_args(cfg: dict) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="DPAI visualization script")
     p.add_argument("--audio", type=str, default=None,
                    help="Path to an audio file. Falls back to synthetic audio if omitted.")
+    p.add_argument("--detect_mask", action="store_true",
+                   help="Extract mask directly from input corrupted audio instead of generating synthetic gaps.")
+    p.add_argument("--threshold", type=float, default=1e-6,
+                   help="Amplitude threshold for mask extraction (used with --detect_mask).")
+    p.add_argument("--min_gap_samples", type=int, default=5,
+                   help="Minimum contiguous zero samples for mask extraction.")
     p.add_argument("--cumulative_gap_ms", type=float,
                    default=cfg["corruption"]["cumulative_gap_ms"],
                    help="Total gap duration in ms (default from config.yaml).")
@@ -87,40 +93,65 @@ def main() -> None:
     audio_out_dir.mkdir(parents=True, exist_ok=True)
 
     # -----------------------------------------------------------------------
-    # 1. Load / generate audio
+    # 1 & 2. Load audio and determine mask
     # -----------------------------------------------------------------------
-    if args.audio is not None:
-        audio_clean = load_audio(
+    if args.detect_mask:
+        if args.audio is None:
+            raise ValueError("--detect_mask requires a valid audio file path passed via --audio")
+        # Load real corrupted audio without peak normalising so zeros/small values are preserved
+        audio_corrupted = load_audio(
             args.audio,
             sample_rate=sample_rate,
             mono=True,
             duration_seconds=duration_s,
-            peak_normalise=True,
+            peak_normalise=False,
         )
-        print(f"Loaded audio from: {args.audio}")
+        print(f"Loaded real corrupted audio from: {args.audio}")
+        mask_np = extract_mask_from_audio(
+            audio_corrupted,
+            threshold=args.threshold,
+            min_gap_samples=args.min_gap_samples,
+        )
+        if isinstance(mask_np, torch.Tensor):
+            mask_torch = mask_np.float()
+            mask_np = mask_torch.numpy()
+        else:
+            mask_torch = torch.from_numpy(mask_np)
+        audio_clean = audio_corrupted  # Reference audio is corrupted audio for visualization
+        print(f"Extracted mask from audio: detected {(mask_np == 0.0).sum()} missing samples")
     else:
-        audio_clean = make_synthetic_audio(
-            duration_seconds=duration_s,
+        if args.audio is not None:
+            audio_clean = load_audio(
+                args.audio,
+                sample_rate=sample_rate,
+                mono=True,
+                duration_seconds=duration_s,
+                peak_normalise=True,
+            )
+            print(f"Loaded clean audio from: {args.audio}")
+        else:
+            audio_clean = make_synthetic_audio(
+                duration_seconds=duration_s,
+                sample_rate=sample_rate,
+                seed=args.seed,
+            )
+            print("Using synthetic audio (no --audio path provided).")
+
+        N = audio_clean.shape[0]
+
+        mask_np = create_mask(
+            num_samples=N,
             sample_rate=sample_rate,
+            min_gap_ms=min_gap_ms,
+            max_gap_ms=max_gap_ms,
+            cumulative_gap_ms=args.cumulative_gap_ms,
             seed=args.seed,
         )
-        print("Using synthetic audio (no --audio path provided).")
+        mask_torch = torch.from_numpy(mask_np)
+        audio_corrupted = audio_clean * mask_torch
 
     N = audio_clean.shape[0]
 
-    # -----------------------------------------------------------------------
-    # 2. Create corruption mask
-    # -----------------------------------------------------------------------
-    mask_np = create_mask(
-        num_samples=N,
-        sample_rate=sample_rate,
-        min_gap_ms=min_gap_ms,
-        max_gap_ms=max_gap_ms,
-        cumulative_gap_ms=args.cumulative_gap_ms,
-        seed=args.seed,
-    )
-    mask_torch = torch.from_numpy(mask_np)
-    audio_corrupted = audio_clean * mask_torch
 
     # -----------------------------------------------------------------------
     # 3. Compute STFTs

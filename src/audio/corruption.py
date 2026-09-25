@@ -1,10 +1,12 @@
-﻿"""Utilities for creating artificial missing portions in audio."""
+"""Utilities for creating artificial missing portions in audio."""
 
 from __future__ import annotations
 
 from typing import Optional
 
 import numpy as np
+import torch
+
 
 
 def create_mask(
@@ -138,3 +140,59 @@ def apply_mask(audio: np.ndarray, mask: np.ndarray) -> np.ndarray:
         Masked audio array of shape ``(N,)``.
     """
     return audio * mask
+
+
+def extract_mask_from_audio(
+    corrupted_audio: np.ndarray | torch.Tensor,
+    threshold: float = 1e-6,
+    min_gap_samples: int = 5,
+) -> np.ndarray | torch.Tensor:
+    """Extract / infer a sample-level binary mask from a real corrupted audio signal.
+
+    Detects contiguous zeroed or near-zero regions (where ``|x| <= threshold``)
+    of length at least *min_gap_samples*. Isolated zero-crossings (shorter than
+    *min_gap_samples*) are treated as valid observed samples.
+
+    Args:
+        corrupted_audio: 1D signal waveform (np.ndarray or torch.Tensor).
+        threshold: Amplitude threshold below which a sample is considered potentially zeroed.
+        min_gap_samples: Minimum contiguous samples below threshold required to classify
+            a region as a corrupted gap. Prevents single zero-crossings from being misidentified.
+
+    Returns:
+        Binary mask of same shape and type as *corrupted_audio*, with values 1.0 (observed)
+        and 0.0 (missing/corrupted).
+    """
+    is_torch = isinstance(corrupted_audio, torch.Tensor)
+    if is_torch:
+        arr = corrupted_audio.detach().cpu().numpy()
+    else:
+        arr = np.asarray(corrupted_audio)
+
+    N = len(arr)
+    mask = np.ones(N, dtype=np.float32)
+    below_thresh = np.abs(arr) <= threshold
+
+    # Find contiguous runs of True in below_thresh
+    in_run = False
+    run_start = 0
+
+    for i in range(N):
+        if below_thresh[i] and not in_run:
+            in_run = True
+            run_start = i
+        elif not below_thresh[i] and in_run:
+            run_len = i - run_start
+            if run_len >= min_gap_samples:
+                mask[run_start:i] = 0.0
+            in_run = False
+
+    if in_run:
+        run_len = N - run_start
+        if run_len >= min_gap_samples:
+            mask[run_start:N] = 0.0
+
+    if is_torch:
+        return torch.from_numpy(mask).to(device=corrupted_audio.device, dtype=corrupted_audio.dtype)
+    return mask
+

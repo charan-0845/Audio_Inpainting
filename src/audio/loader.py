@@ -1,4 +1,4 @@
-﻿"""Audio loading and preprocessing utilities."""
+"""Audio loading and preprocessing utilities."""
 
 from __future__ import annotations
 
@@ -36,7 +36,16 @@ def load_audio(
     Returns:
         Waveform tensor of shape ``(N,)`` on CPU, dtype ``torch.float32``.
     """
-    waveform, sr = torchaudio.load(str(path))  # (C, T) float32
+    try:
+        waveform, sr = torchaudio.load(str(path))  # (C, T) float32
+    except Exception:
+        import soundfile as sf
+        data, sr = sf.read(str(path), dtype="float32")
+        if data.ndim == 1:
+            waveform = torch.from_numpy(data).unsqueeze(0)
+        else:
+            waveform = torch.from_numpy(data.T)
+
 
     # --- mono conversion ---
     if mono and waveform.shape[0] > 1:

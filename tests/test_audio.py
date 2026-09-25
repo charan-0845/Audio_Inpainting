@@ -1,4 +1,4 @@
-﻿"""Tests for audio loading / corruption mask utilities."""
+"""Tests for audio loading / corruption mask utilities."""
 
 from __future__ import annotations
 
@@ -128,3 +128,37 @@ def test_different_seeds_different_masks():
     m1 = create_mask(NUM_SAMPLES, SAMPLE_RATE, cumulative_gap_ms=400, seed=0)
     m2 = create_mask(NUM_SAMPLES, SAMPLE_RATE, cumulative_gap_ms=400, seed=1)
     assert not np.array_equal(m1, m2)
+
+
+# ---------------------------------------------------------------------------
+# extract_mask_from_audio tests
+# ---------------------------------------------------------------------------
+
+from src.audio.corruption import extract_mask_from_audio
+import torch
+
+
+def test_extract_mask_perfect_reconstruction():
+    """Applying mask and then extracting mask should reconstruct the original mask."""
+    audio = make_synthetic_audio(duration_seconds=1.0, sample_rate=16000, seed=42)
+    orig_mask = create_mask(len(audio), 16000, cumulative_gap_ms=100.0, seed=42)
+    corrupted_audio = audio * torch.from_numpy(orig_mask)
+
+    extracted_mask_torch = extract_mask_from_audio(corrupted_audio, threshold=1e-6, min_gap_samples=5)
+    extracted_mask_np = extracted_mask_torch.numpy()
+
+    np.testing.assert_array_equal(extracted_mask_np, orig_mask)
+
+
+def test_extract_mask_isolated_zero_crossings():
+    """Isolated zero crossings (< min_gap_samples) should NOT be flagged as missing gaps."""
+    # Create sine wave audio
+    t = np.linspace(0, 1, 16000)
+    sine = np.sin(2 * np.pi * 10 * t).astype(np.float32)  # 10 Hz sine, crosses 0 at exact samples
+
+    # Extract mask with min_gap_samples=5
+    extracted = extract_mask_from_audio(sine, threshold=1e-5, min_gap_samples=5)
+
+    # Since there are no contiguous zero blocks >= 5 samples, all samples should be 1.0
+    assert (extracted == 1.0).all()
+
