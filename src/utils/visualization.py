@@ -129,6 +129,30 @@ def plot_spectrogram(
     return fig
 
 
+def plot_loss_curves(
+    train_loss: Sequence[float],
+    val_loss: Optional[Sequence[Tuple[int, float]]] = None,
+    out_path: Optional[str | Path] = None,
+) -> plt.Figure:
+    """Plot deep-prior training and optional missing-region diagnostic loss."""
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(np.arange(len(train_loss)), train_loss, label="Observed-region training loss")
+    if val_loss:
+        epochs, values = zip(*val_loss)
+        ax.plot(epochs, values, "o-", label="Missing-region diagnostic loss")
+    ax.set_yscale("log")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("MSE")
+    ax.set_title("Deep-prior optimization")
+    ax.grid(True, which="both", alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    if out_path is not None:
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(out_path), dpi=_DPI)
+    return fig
+
+
 def plot_waveform_with_gaps(
     audio_clean: torch.Tensor,
     audio_corrupted: torch.Tensor,
