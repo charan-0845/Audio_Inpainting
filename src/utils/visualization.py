@@ -1,4 +1,4 @@
-﻿"""Spectrogram and reconstruction visualization utilities.
+"""Spectrogram and reconstruction visualization utilities.
 
 All functions use the Agg backend and write to disk; they never call
 ``plt.show()``.  Axes are labelled in seconds and Hz; colorbars are in dB.
@@ -151,6 +151,47 @@ def plot_loss_curves(
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(str(out_path), dpi=_DPI)
     return fig
+
+
+def plot_comparison_curves(
+    plain_train_loss: Sequence[float],
+    plain_val_loss: Optional[Sequence[Tuple[int, float]]],
+    multires_train_loss: Sequence[float],
+    multires_val_loss: Optional[Sequence[Tuple[int, float]]],
+    out_path: Optional[str | Path] = None,
+) -> plt.Figure:
+    """Plot overlaid training and validation loss curves for PlainUNet vs MultiResUNet."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax1.plot(np.arange(len(plain_train_loss)), plain_train_loss, label="PlainUNet", alpha=0.85)
+    ax1.plot(np.arange(len(multires_train_loss)), multires_train_loss, label="MultiResUNet", alpha=0.85)
+    ax1.set_yscale("log")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("MSE")
+    ax1.set_title("(a) Training loss (observed region)")
+    ax1.grid(True, which="both", alpha=0.25)
+    ax1.legend()
+
+    if plain_val_loss:
+        epochs_p, vals_p = zip(*plain_val_loss)
+        ax2.plot(epochs_p, vals_p, "o-", label="PlainUNet", alpha=0.85)
+    if multires_val_loss:
+        epochs_m, vals_m = zip(*multires_val_loss)
+        ax2.plot(epochs_m, vals_m, "s-", label="MultiResUNet", alpha=0.85)
+
+    ax2.set_yscale("log")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("MSE")
+    ax2.set_title("(b) Validation loss (missing region)")
+    ax2.grid(True, which="both", alpha=0.25)
+    ax2.legend()
+
+    fig.tight_layout()
+    if out_path is not None:
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(out_path), dpi=_DPI)
+    return fig
+
 
 
 def plot_waveform_with_gaps(
