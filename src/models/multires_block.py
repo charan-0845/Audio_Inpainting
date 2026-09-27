@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Tuple
 
-torch_imported = False
 import torch
 from torch import nn
+
+from src.models.harmonic_conv import HarmonicConv2d
 
 
 class MultiResBlock(nn.Module):
@@ -15,6 +16,7 @@ class MultiResBlock(nn.Module):
     Factorizes 5x5 and 7x7 convolutions into three consecutive 3x3 convolutions,
     concatenates intermediate multi-resolution features, and adds a 1x1 residual shortcut.
     Uses GroupNorm(1, C) to match the PlainUNet normalization choice.
+    Supports optional HarmonicConv2d when use_harmonic=True.
     """
 
     def __init__(
@@ -24,9 +26,14 @@ class MultiResBlock(nn.Module):
         alpha: float = 1.6,
         filter_ratios: Tuple[float, float, float] = (1 / 6, 2 / 6, 3 / 6),
         negative_slope: float = 0.01,
+        use_harmonic: bool = False,
+        anchor: int = 1,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
+        self.use_harmonic = use_harmonic
+        self.anchor = anchor
+
         W = alpha * out_channels
         w1 = max(1, int(round(W * filter_ratios[0])))
         w2 = max(1, int(round(W * filter_ratios[1])))
@@ -35,24 +42,29 @@ class MultiResBlock(nn.Module):
         self.w1, self.w2, self.w3 = w1, w2, w3
         self.out_channels = w1 + w2 + w3
 
+        def _make_conv(in_c: int, out_c: int, kernel: int) -> nn.Module:
+            if use_harmonic:
+                return HarmonicConv2d(in_c, out_c, kernel, anchor=anchor, padding="same", bias=False)
+            return nn.Conv2d(in_c, out_c, kernel, padding=kernel // 2, bias=False)
+
         self.conv3x3_1 = nn.Sequential(
-            nn.Conv2d(in_channels, w1, 3, padding=1, bias=False),
+            _make_conv(in_channels, w1, 3),
             nn.GroupNorm(1, w1),
             nn.LeakyReLU(negative_slope, inplace=True),
         )
         self.conv3x3_2 = nn.Sequential(
-            nn.Conv2d(w1, w2, 3, padding=1, bias=False),
+            _make_conv(w1, w2, 3),
             nn.GroupNorm(1, w2),
             nn.LeakyReLU(negative_slope, inplace=True),
         )
         self.conv3x3_3 = nn.Sequential(
-            nn.Conv2d(w2, w3, 3, padding=1, bias=False),
+            _make_conv(w2, w3, 3),
             nn.GroupNorm(1, w3),
             nn.LeakyReLU(negative_slope, inplace=True),
         )
 
         self.shortcut = nn.Sequential(
-            nn.Conv2d(in_channels, self.out_channels, 1, bias=False),
+            _make_conv(in_channels, self.out_channels, 1),
             nn.GroupNorm(1, self.out_channels),
         )
         self.norm = nn.GroupNorm(1, self.out_channels)

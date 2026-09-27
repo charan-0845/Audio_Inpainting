@@ -19,6 +19,12 @@ model:
   input_channels: 2
   output_channels: 2
   negative_slope: 0.01
+  use_harmonic: false
+  harmonic_anchors:
+    default: 1
+    res_path_residual: 1
+    downsampling_conv1: 1
+
 
 optimization:
   epochs: 5000

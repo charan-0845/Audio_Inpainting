@@ -154,30 +154,47 @@ def plot_loss_curves(
 
 
 def plot_comparison_curves(
-    plain_train_loss: Sequence[float],
-    plain_val_loss: Optional[Sequence[Tuple[int, float]]],
-    multires_train_loss: Sequence[float],
-    multires_val_loss: Optional[Sequence[Tuple[int, float]]],
+    plain_train_loss: Optional[Sequence[float]] = None,
+    plain_val_loss: Optional[Sequence[Tuple[int, float]]] = None,
+    multires_train_loss: Optional[Sequence[float]] = None,
+    multires_val_loss: Optional[Sequence[Tuple[int, float]]] = None,
     out_path: Optional[str | Path] = None,
+    models_dict: Optional[dict[str, dict]] = None,
 ) -> plt.Figure:
-    """Plot overlaid training and validation loss curves for PlainUNet vs MultiResUNet."""
+    """Plot overlaid training and validation loss curves for multiple models.
+
+    Supports both legacy 2-model positional arguments and a general models_dict mapping
+    model labels to dicts containing 'train_loss' and optional 'val_loss'.
+    """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-    ax1.plot(np.arange(len(plain_train_loss)), plain_train_loss, label="PlainUNet", alpha=0.85)
-    ax1.plot(np.arange(len(multires_train_loss)), multires_train_loss, label="MultiResUNet", alpha=0.85)
+    if models_dict is None:
+        models_dict = {}
+        if plain_train_loss is not None:
+            models_dict["PlainUNet"] = {"train_loss": plain_train_loss, "val_loss": plain_val_loss}
+        if multires_train_loss is not None:
+            models_dict["MultiResUNet"] = {"train_loss": multires_train_loss, "val_loss": multires_val_loss}
+
+    markers = ["o-", "s-", "^-", "d-", "x-"]
+
+    for idx, (label, data) in enumerate(models_dict.items()):
+        train_loss = data.get("train_loss")
+        val_loss = data.get("val_loss")
+        marker = markers[idx % len(markers)]
+
+        if train_loss is not None:
+            ax1.plot(np.arange(len(train_loss)), train_loss, label=label, alpha=0.85)
+
+        if val_loss:
+            epochs, vals = zip(*val_loss)
+            ax2.plot(epochs, vals, marker, label=label, alpha=0.85)
+
     ax1.set_yscale("log")
     ax1.set_xlabel("Epoch")
     ax1.set_ylabel("MSE")
     ax1.set_title("(a) Training loss (observed region)")
     ax1.grid(True, which="both", alpha=0.25)
     ax1.legend()
-
-    if plain_val_loss:
-        epochs_p, vals_p = zip(*plain_val_loss)
-        ax2.plot(epochs_p, vals_p, "o-", label="PlainUNet", alpha=0.85)
-    if multires_val_loss:
-        epochs_m, vals_m = zip(*multires_val_loss)
-        ax2.plot(epochs_m, vals_m, "s-", label="MultiResUNet", alpha=0.85)
 
     ax2.set_yscale("log")
     ax2.set_xlabel("Epoch")
@@ -191,6 +208,7 @@ def plot_comparison_curves(
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(str(out_path), dpi=_DPI)
     return fig
+
 
 
 

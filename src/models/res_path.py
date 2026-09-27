@@ -5,12 +5,15 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from src.models.harmonic_conv import HarmonicConv2d
+
 
 class ResPath(nn.Module):
     """Res Path module to mitigate semantic gap between encoder and decoder skip features.
 
     Consists of a sequence of `length` mini-blocks, each combining a 3x3 convolution
     and a 1x1 residual shortcut connection while preserving channel counts.
+    Supports optional HarmonicConv2d when use_harmonic=True.
     """
 
     def __init__(
@@ -18,22 +21,31 @@ class ResPath(nn.Module):
         in_channels: int,
         length: int,
         negative_slope: float = 0.01,
+        use_harmonic: bool = False,
+        anchor: int = 1,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.length = length
+        self.use_harmonic = use_harmonic
+        self.anchor = anchor
+
+        def _make_conv(in_c: int, out_c: int, kernel: int) -> nn.Module:
+            if use_harmonic:
+                return HarmonicConv2d(in_c, out_c, kernel, anchor=anchor, padding="same", bias=False)
+            return nn.Conv2d(in_c, out_c, kernel, padding=kernel // 2, bias=False)
 
         self.blocks = nn.ModuleList()
         for _ in range(length):
             block = nn.ModuleDict(
                 {
                     "conv3x3": nn.Sequential(
-                        nn.Conv2d(in_channels, in_channels, 3, padding=1, bias=False),
+                        _make_conv(in_channels, in_channels, 3),
                         nn.GroupNorm(1, in_channels),
                         nn.LeakyReLU(negative_slope, inplace=True),
                     ),
                     "shortcut": nn.Sequential(
-                        nn.Conv2d(in_channels, in_channels, 1, bias=False),
+                        _make_conv(in_channels, in_channels, 1),
                         nn.GroupNorm(1, in_channels),
                     ),
                     "norm": nn.GroupNorm(1, in_channels),

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Dict, Optional
+
 import torch
 from torch import nn
 
+from src.models.harmonic_conv import HarmonicConv2d
 from src.models.multires_block import MultiResBlock
 from src.models.res_path import ResPath
 
@@ -15,6 +18,7 @@ class MultiResUNet(nn.Module):
     Replaces standard double convolutions with MultiResBlocks and processes skip connections
     with ResPaths of decreasing length (4, 3, 2, 1).
     GroupNorm is used instead of BatchNorm to match PlainUNet's deep-prior single-spectrogram setup.
+    Supports optional HarmonicConv2d in the encoder when use_harmonic=True.
     """
 
     def __init__(
@@ -24,9 +28,14 @@ class MultiResUNet(nn.Module):
         base_filters: int = 7,
         alpha: float = 1.6,
         negative_slope: float = 0.01,
+        use_harmonic: bool = False,
+        harmonic_anchors: Optional[Dict[str, int]] = None,
     ) -> None:
         super().__init__()
         self._depth = 5
+        self.use_harmonic = use_harmonic
+        self.harmonic_anchors = harmonic_anchors or {"default": 1, "res_path_residual": 1, "downsampling_conv1": 1}
+
         channels = [base_filters * (2**i) for i in range(5)]
 
         self.encoders = nn.ModuleList()
@@ -37,24 +46,57 @@ class MultiResUNet(nn.Module):
         encoder_out_channels = []
         res_lengths = [4, 3, 2, 1]
 
+        default_anchor = self.harmonic_anchors.get("default", 1)
+
         for i, current in enumerate(channels):
-            encoder = MultiResBlock(previous, current, alpha=alpha, negative_slope=negative_slope)
+            encoder = MultiResBlock(
+                previous,
+                current,
+                alpha=alpha,
+                negative_slope=negative_slope,
+                use_harmonic=use_harmonic,
+                anchor=default_anchor,
+            )
             self.encoders.append(encoder)
             out_ch = encoder.out_channels
             encoder_out_channels.append(out_ch)
 
             next_ch = out_ch * 2
-            downsample = nn.Conv2d(out_ch, next_ch, 3, stride=2, padding=1, bias=False)
+            if use_harmonic:
+                ds_anchor = self.harmonic_anchors.get("downsampling_conv1", default_anchor)
+                downsample = HarmonicConv2d(
+                    out_ch,
+                    next_ch,
+                    3,
+                    stride=2,
+                    padding="same",
+                    bias=False,
+                    anchor=ds_anchor,
+                )
+            else:
+                downsample = nn.Conv2d(out_ch, next_ch, 3, stride=2, padding=1, bias=False)
             self.downsamples.append(downsample)
             previous = next_ch
 
             if i < 4:
+                rp_anchor = self.harmonic_anchors.get("res_path_residual", default_anchor)
                 self.res_paths.append(
-                    ResPath(out_ch, length=res_lengths[i], negative_slope=negative_slope)
+                    ResPath(
+                        out_ch,
+                        length=res_lengths[i],
+                        negative_slope=negative_slope,
+                        use_harmonic=use_harmonic,
+                        anchor=rp_anchor,
+                    )
                 )
 
         self.bottleneck = MultiResBlock(
-            previous, base_filters * 32, alpha=alpha, negative_slope=negative_slope
+            previous,
+            base_filters * 32,
+            alpha=alpha,
+            negative_slope=negative_slope,
+            use_harmonic=use_harmonic,
+            anchor=default_anchor,
         )
         bottleneck_out = self.bottleneck.out_channels
 
@@ -68,7 +110,14 @@ class MultiResUNet(nn.Module):
                 skip_ch = encoder_out_channels[4 - i]
 
             in_dec_ch = prev_dec_ch + skip_ch
-            decoder = MultiResBlock(in_dec_ch, current, alpha=alpha, negative_slope=negative_slope)
+            # Decoder convolutions remain regular nn.Conv2d (use_harmonic=False)
+            decoder = MultiResBlock(
+                in_dec_ch,
+                current,
+                alpha=alpha,
+                negative_slope=negative_slope,
+                use_harmonic=False,
+            )
             self.decoders.append(decoder)
             prev_dec_ch = decoder.out_channels
 
