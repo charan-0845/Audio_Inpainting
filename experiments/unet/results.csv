@@ -1,0 +1,4 @@
+variant,tier,clip,type,level_ms,seed,epochs,nmse_tot_db,nmse_miss_db,pesq_delta,runtime_s,git,note
+unet,quick,piano_01,piano,200,0,5000,-14.649,0.0,,0.0,9c436b8, DUMMY
+unet,quick,piano_01,piano,600,0,5000,-10.63,0.0,,0.0,9c436b8, DUMMY
+unet,quick,piano_01,piano,1000,0,5000,-7.765,0.0,,0.0,9c436b8, DUMMY
