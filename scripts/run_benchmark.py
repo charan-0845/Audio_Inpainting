@@ -195,6 +195,7 @@ def main():
                     return
                 clean, mask, corrupted = bm.load_case(clip, level)
                 t0 = time.time()
+                print(f"\n=== {clip['id']} | {level} ms | seed {seed} | variant {args.variant} ===", flush=True)
                 recon = np.asarray(run_one(args.variant, corrupted, mask,
                                            args.epochs, seed, args.dummy), dtype=np.float32)
                 runtime = time.time() - t0

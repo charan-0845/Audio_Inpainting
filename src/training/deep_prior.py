@@ -62,6 +62,8 @@ def optimize_deep_prior(
         loss.backward()
         optimizer.step()
         loss_history.append(float(loss.detach().cpu()))
+        if epoch % 250 == 0 or epoch == epochs - 1:
+            print(f"  epoch {epoch + 1}/{epochs}  loss={loss_history[-1]:.4e}", flush=True)
 
         if reference is not None and (epoch % log_every == 0 or epoch == epochs - 1):
             with torch.no_grad():
