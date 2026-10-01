@@ -164,11 +164,16 @@ def main():
     ap.add_argument("--manifest", default="benchmark/manifest.json")
     ap.add_argument("--note", default="", help="e.g. 'mse-only loss'")
     ap.add_argument("--limit", type=int, default=None, help="run at most N new cases")
+    ap.add_argument("--only", choices=["piano", "music", "speech"], default=None,
+                    help="run only clips of this type")
+    ap.add_argument("--worker", default=None,
+                    help="worker letter; writes results_<worker>.csv instead of results.csv")
     ap.add_argument("--dummy", action="store_true", help="skip training (plumbing test)")
     args = ap.parse_args()
 
     manifest = bm.load_manifest(args.manifest)
-    csv_path = Path("experiments") / args.variant / "results.csv"
+    fname = f"results_{args.worker}.csv" if args.worker else "results.csv"
+    csv_path = Path("experiments") / args.variant / fname
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     audio_dir = Path("outputs/audio") / args.variant
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -181,6 +186,8 @@ def main():
         if new_file:
             writer.writeheader()
         for clip, level in bm.iter_cases(manifest, args.tier):
+            if args.only and clip["type"] != args.only:
+                continue
             for seed in args.seeds:
                 if (clip["id"], level, seed) in finished:
                     continue
