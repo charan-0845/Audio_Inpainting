@@ -1,0 +1,12 @@
+{
+  "run_id": "synthetic_200ms_s0_20261008-101357",
+  "clip_id": "synthetic",
+  "gap_ms": 200.0,
+  "seed": 0,
+  "epochs": 10,
+  "n_params": 685414,
+  "runtime_s": 26.44,
+  "device": "cpu",
+  "torch_version": "2.10.0+cpu",
+  "git_hash": "54b3e1d"
+}

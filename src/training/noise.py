@@ -1,7 +1,6 @@
 """Deterministic noise construction for deep-prior optimization."""
 
 from __future__ import annotations
-
 import torch
 
 
