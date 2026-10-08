@@ -1,3 +1,4 @@
+# DEPRECATED: This script is superseded by `python app.py inpaint`. Kept for reference only.
 """Compare PlainUNet, MultiResUNet (regular), and MultiResUNet (harmonic) architectures.
 
 Example:

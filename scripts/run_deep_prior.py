@@ -1,3 +1,4 @@
+# DEPRECATED: This script is superseded by `python app.py inpaint`. Kept for reference only.
 """Run one CPU-friendly plain U-Net deep-prior reconstruction.
 
 Example:

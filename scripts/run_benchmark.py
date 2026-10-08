@@ -1,3 +1,4 @@
+# DEPRECATED: This script is superseded by `python app.py benchmark`. Kept for reference only.
 """Resumable benchmark runner.
 
     python scripts/run_benchmark.py --variant unet --tier quick
