@@ -1,4 +1,4 @@
-﻿"""app.py – DPAI audio inpainting application (MultiResUNet only).
+"""app.py – DPAI audio inpainting application (MultiResUNet only).
 
 Subcommands
 -----------
@@ -231,7 +231,7 @@ def _cmd_inpaint(args: argparse.Namespace) -> None:
         is_speech=False,
         sample_rate=sr,
     )
-    print(f"\n✓ Run saved to: {run_dir}")
+    print(f"\n[OK] Run saved to: {run_dir}")
     print(f"  Epochs: {result.epochs}  |  Params: {result.n_params:,}  |  "
           f"Runtime: {result.runtime_s:.1f}s")
     print("  Files produced:")
