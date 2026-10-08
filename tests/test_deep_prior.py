@@ -8,7 +8,7 @@ from src.training.noise import make_input_noise
 
 def _run(observed: torch.Tensor, reference: torch.Tensor | None = None):
     torch.manual_seed(10)
-    model = PlainUNet(base_filters=2)
+    model = PlainUNet(channel_schedule=[8,8,8,8,8])
     noise_generator = torch.Generator().manual_seed(20)
     noise = make_input_noise((2, 64, 64), seed=21)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
@@ -45,7 +45,7 @@ def test_missing_region_garbage_does_not_change_training_loss() -> None:
 
     def run(observed):
         torch.manual_seed(10)
-        model = PlainUNet(base_filters=2)
+        model = PlainUNet(channel_schedule=[8,8,8,8,8])
         optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
         return optimize_deep_prior(
             model,

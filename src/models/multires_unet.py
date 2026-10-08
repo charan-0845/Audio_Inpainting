@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
 from torch import nn
@@ -13,30 +13,35 @@ from src.models.res_path import ResPath
 
 
 class MultiResUNet(nn.Module):
-    """Five-level MultiResUNet with Res Path skip connections and nearest-neighbour upsampling.
-
-    Replaces standard double convolutions with MultiResBlocks and processes skip connections
-    with ResPaths of decreasing length (4, 3, 2, 1).
-    GroupNorm is used instead of BatchNorm to match PlainUNet's deep-prior single-spectrogram setup.
-    Supports optional HarmonicConv2d in the encoder when use_harmonic=True.
-    """
+    """Five-level MultiResUNet with Res Path skip connections and nearest-neighbour upsampling."""
 
     def __init__(
         self,
         in_channels: int = 2,
         out_channels: int = 2,
-        base_filters: int = 7,
+        channel_schedule: Optional[List[int]] = None,
+        res_path_lengths: Optional[List[int]] = None,
         alpha: float = 1.6,
         negative_slope: float = 0.01,
         use_harmonic: bool = False,
         harmonic_anchors: Optional[Dict[str, int]] = None,
+        norm: str = "batch",
+        pad_multiple: int = 32,
     ) -> None:
         super().__init__()
-        self._depth = 5
+        
+        if channel_schedule is None:
+            channel_schedule = [68, 68, 68, 68, 68]  # default to paper size
+        if res_path_lengths is None:
+            res_path_lengths = [4, 3, 2, 1]
+
+        self.channel_schedule = channel_schedule
+        self.res_path_lengths = res_path_lengths
+        self.pad_multiple = pad_multiple
+        
+        self._depth = len(channel_schedule)
         self.use_harmonic = use_harmonic
         self.harmonic_anchors = harmonic_anchors or {"default": 1, "res_path_residual": 1, "downsampling_conv1": 1}
-
-        channels = [base_filters * (2**i) for i in range(5)]
 
         self.encoders = nn.ModuleList()
         self.downsamples = nn.ModuleList()
@@ -44,79 +49,87 @@ class MultiResUNet(nn.Module):
 
         previous = in_channels
         encoder_out_channels = []
-        res_lengths = [4, 3, 2, 1]
 
         default_anchor = self.harmonic_anchors.get("default", 1)
 
-        for i, current in enumerate(channels):
+        for i, current in enumerate(channel_schedule):
             encoder = MultiResBlock(
                 previous,
                 current,
                 alpha=alpha,
                 negative_slope=negative_slope,
                 use_harmonic=use_harmonic,
-                anchor=default_anchor,
+                harmonic_anchors=self.harmonic_anchors,
+                norm=norm,
             )
             self.encoders.append(encoder)
             out_ch = encoder.out_channels
             encoder_out_channels.append(out_ch)
 
-            next_ch = out_ch * 2
-            if use_harmonic:
-                ds_anchor = self.harmonic_anchors.get("downsampling_conv1", default_anchor)
-                downsample = HarmonicConv2d(
-                    out_ch,
-                    next_ch,
-                    3,
-                    stride=2,
-                    padding="same",
-                    bias=False,
-                    anchor=ds_anchor,
-                )
+            if i < len(channel_schedule) - 1:
+                next_ch = channel_schedule[i + 1]
+                if use_harmonic:
+                    ds_anchor = self.harmonic_anchors.get("downsampling_conv1", default_anchor)
+                    downsample = HarmonicConv2d(
+                        out_ch,
+                        next_ch,
+                        3,
+                        stride=2,
+                        padding="same",
+                        bias=False,
+                        anchor=ds_anchor,
+                    )
+                else:
+                    downsample = nn.Conv2d(out_ch, next_ch, 3, stride=2, padding=1, bias=False)
+                self.downsamples.append(downsample)
+                previous = next_ch
             else:
-                downsample = nn.Conv2d(out_ch, next_ch, 3, stride=2, padding=1, bias=False)
-            self.downsamples.append(downsample)
-            previous = next_ch
+                previous = out_ch
 
-            if i < 4:
+            if i < len(res_path_lengths):
                 rp_anchor = self.harmonic_anchors.get("res_path_residual", default_anchor)
                 self.res_paths.append(
                     ResPath(
                         out_ch,
-                        length=res_lengths[i],
+                        length=res_path_lengths[i],
                         negative_slope=negative_slope,
                         use_harmonic=use_harmonic,
-                        anchor=rp_anchor,
+                        harmonic_anchors=self.harmonic_anchors,
+                        norm=norm,
                     )
                 )
 
+        # Bottleneck
         self.bottleneck = MultiResBlock(
             previous,
-            base_filters * 32,
+            channel_schedule[-1],
             alpha=alpha,
             negative_slope=negative_slope,
             use_harmonic=use_harmonic,
-            anchor=default_anchor,
+            harmonic_anchors=self.harmonic_anchors,
+            norm=norm,
         )
         bottleneck_out = self.bottleneck.out_channels
 
         self.decoders = nn.ModuleList()
         prev_dec_ch = bottleneck_out
 
-        for i, current in enumerate(reversed(channels)):
-            if i == 0:
-                skip_ch = encoder_out_channels[4]
-            else:
-                skip_ch = encoder_out_channels[4 - i]
+        # If length is 5, we have 4 decoders (upsampling back to level 0)
+        # We need len(channel_schedule) - 1 decoders.
+        for i in range(len(channel_schedule) - 1):
+            # i=0 means upsampling from level 4 to 3
+            current_idx = len(channel_schedule) - 2 - i
+            current_ch = channel_schedule[current_idx]
+            skip_ch = encoder_out_channels[current_idx]
 
             in_dec_ch = prev_dec_ch + skip_ch
-            # Decoder convolutions remain regular nn.Conv2d (use_harmonic=False)
             decoder = MultiResBlock(
                 in_dec_ch,
-                current,
+                current_ch,
                 alpha=alpha,
                 negative_slope=negative_slope,
                 use_harmonic=False,
+                norm=norm,
             )
             self.decoders.append(decoder)
             prev_dec_ch = decoder.out_channels
@@ -125,7 +138,6 @@ class MultiResUNet(nn.Module):
         self._parameter_count = self.count_parameters()
 
     def count_parameters(self) -> int:
-        """Return the number of trainable parameters."""
         return sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -133,29 +145,28 @@ class MultiResUNet(nn.Module):
         if was_unbatched:
             x = x.unsqueeze(0)
         if x.ndim != 4:
-            raise ValueError(f"MultiResUNet expects (C, M, L) or (N, C, M, L), got {tuple(x.shape)}")
-        if x.shape[-2] % 32 or x.shape[-1] % 32:
-            raise ValueError(
-                "MultiResUNet spatial dimensions must be divisible by 32; "
-                f"received {(x.shape[-2], x.shape[-1])}. Pad the spectrogram before the model."
-            )
+            raise ValueError(f"MultiResUNet expects (C, M, L) or (N, C, M, L)")
+        if x.shape[-2] % self.pad_multiple or x.shape[-1] % self.pad_multiple:
+            raise ValueError(f"MultiResUNet spatial dimensions must be divisible by {self.pad_multiple}")
 
         skips = []
         current = x
-        for i, (encoder, downsample) in enumerate(zip(self.encoders, self.downsamples)):
+        for i, encoder in enumerate(self.encoders):
             current = encoder(current)
-            if i < 4:
+            if i < len(self.res_paths):
                 skips.append(self.res_paths[i](current))
             else:
                 skips.append(current)
-            current = downsample(current)
+            if i < len(self.downsamples):
+                current = self.downsamples[i](current)
 
         current = self.bottleneck(current)
 
-        for decoder, skip in zip(self.decoders, reversed(skips)):
+        # We have len(channel_schedule)-1 decoders.
+        for decoder, skip in zip(self.decoders, reversed(skips[:-1])):
             current = nn.functional.interpolate(current, scale_factor=2, mode="nearest")
             if current.shape[-2:] != skip.shape[-2:]:
-                raise RuntimeError("MultiResUNet skip connection shapes differ after divisible-by-32 padding.")
+                raise RuntimeError(f"MultiResUNet skip connection shapes differ")
             current = decoder(torch.cat((current, skip), dim=1))
 
         result = self.output(current)

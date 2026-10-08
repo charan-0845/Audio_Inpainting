@@ -38,6 +38,7 @@ class HarmonicConv2d(nn.Module):
         stride: Union[int, Tuple[int, int]] = 1,
         padding: Union[str, int, Tuple[int, int]] = "same",
         bias: bool = True,
+        out_of_bounds_strategy: str = "zeros",
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -61,24 +62,27 @@ class HarmonicConv2d(nn.Module):
             self.register_parameter("bias", None)
 
         self.reset_parameters()
+        self.out_of_bounds_strategy = out_of_bounds_strategy
         self.register_buffer("_cached_gather_idx", None, persistent=False)
+        self.register_buffer("_cached_valid_mask", None, persistent=False)
+        self._cached_M = -1
 
     def reset_parameters(self) -> None:
         nn.init.kaiming_uniform_(self.weight, a=0.01)
         if self.bias is not None:
             nn.init.zeros_(self.bias)
 
-    def _get_gather_indices(self, M: int, device: torch.device) -> torch.Tensor:
+    def _get_gather_indices(self, M: int, device: torch.device) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         stride_m = self.stride[0]
         m_idx = torch.arange(0, M, stride_m, device=device).unsqueeze(0)  # (1, M_out)
         M_out = m_idx.shape[1]
 
         if (
             self._cached_gather_idx is not None
-            and self._cached_gather_idx.shape[1] == M_out
+            and self._cached_M == M
             and self._cached_gather_idx.device == device
         ):
-            return self._cached_gather_idx
+            return self._cached_gather_idx, self._cached_valid_mask
 
         # k_idx for harmonic taps k = 1..Km
         k_idx = torch.arange(1, self.Km + 1, device=device).unsqueeze(1)  # (Km, 1)
@@ -87,11 +91,17 @@ class HarmonicConv2d(nn.Module):
         raw_source_1based = torch.round((k_idx * (m_idx + 1)) / float(self.anchor))
         raw_source_0based = (raw_source_1based - 1).to(torch.long)
 
-        # Clamping out-of-bounds frequency indices to valid range [0, M - 1]
-        clamped_idx = torch.clamp(raw_source_0based, 0, M - 1)
+        if self.out_of_bounds_strategy == "zeros":
+            valid_mask = (raw_source_0based >= 0) & (raw_source_0based < M)
+            clamped_idx = torch.clamp(raw_source_0based, 0, M - 1)
+        else:
+            valid_mask = None
+            clamped_idx = torch.clamp(raw_source_0based, 0, M - 1)
 
         self._cached_gather_idx = clamped_idx
-        return clamped_idx
+        self._cached_valid_mask = valid_mask
+        self._cached_M = M
+        return clamped_idx, valid_mask
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         was_unbatched = x.ndim == 3
@@ -116,13 +126,19 @@ class HarmonicConv2d(nn.Module):
         else:
             x_padded = x
 
-        gather_idx = self._get_gather_indices(M, x.device)  # (Km, M_out)
+        gather_idx, valid_mask = self._get_gather_indices(M, x.device)  # (Km, M_out)
         M_out = gather_idx.shape[1]
 
         # Vectorized gather over frequency axis
         flat_idx = gather_idx.reshape(-1)  # (Km * M_out)
         lowered = x_padded[:, :, flat_idx, :]  # (B, C, Km * M_out, L_padded)
         lowered = lowered.view(B, C, self.Km, M_out, -1)
+        
+        if valid_mask is not None:
+            # valid_mask is (Km, M_out). Expand to (B, C, Km, M_out, L_padded)
+            # Unsqueeze to align with lowered: (1, 1, Km, M_out, 1)
+            mask_expanded = valid_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
+            lowered = lowered * mask_expanded
 
         lowered_4d = lowered.permute(0, 1, 2, 3, 4).reshape(B, C * self.Km, M_out, -1)
         weight_4d = self.weight.reshape(self.out_channels, C * self.Km, 1, self.Kl)

@@ -1,4 +1,4 @@
-﻿"""Core DPAI inpainting pipeline (MultiResUNet only).
+"""Core DPAI inpainting pipeline (MultiResUNet only).
 
 This module provides :class:`DPAIInpainter`, the single entry-point for
 audio inpainting using the Deep Prior + MultiResUNet approach from:
@@ -208,11 +208,13 @@ class DPAIInpainter:
         model = MultiResUNet(
             in_channels=int(model_cfg.get("input_channels", 2)),
             out_channels=int(model_cfg.get("output_channels", 2)),
-            base_filters=int(model_cfg.get("base_filters", 7)),
+            channel_schedule=model_cfg.get("channel_schedule"),
+            res_path_lengths=model_cfg.get("res_path_lengths"),
             alpha=float(model_cfg.get("alpha", 1.6)),
             negative_slope=float(model_cfg.get("negative_slope", 0.01)),
             use_harmonic=bool(model_cfg.get("use_harmonic", True)),
             harmonic_anchors=model_cfg.get("harmonic_anchors"),
+            norm=model_cfg.get("norm", "batch"),
         ).to(self._device)
         return model, model.count_parameters()
 
@@ -353,21 +355,22 @@ class DPAIInpainter:
 
         # Prepare reference channels (diagnostics only)
         reference_padded: Optional[torch.Tensor] = None
-        clean_wav_for_mss: Optional[torch.Tensor] = None
         if reference is not None:
             ref_wav = torch.from_numpy(np.asarray(reference, dtype=np.float32))
             ref_stft = compute_stft(ref_wav, **self._stft_params())
             ref_ch = stft_to_channels(ref_stft)
             ref_ch_padded, _ = pad_to_multiple(ref_ch)
             reference_padded = ref_ch_padded.detach().to(self._device)
-            clean_wav_for_mss = ref_wav.detach()
+
+        # Corrupted waveform for MSS reference
+        corrupted_wav = torch.from_numpy(np.asarray(corrupted, dtype=np.float32)).detach()
 
         # f. Build loss function
         loss_fn = build_loss(
             self._cfg,
             stft_cfg=self._stft_params(),
-            clean_wav=clean_wav_for_mss,
-            frame_mask=fmask_vec,
+            corrupted_wav=corrupted_wav,
+            sample_mask=torch.from_numpy(np.asarray(sample_mask, dtype=np.float32)).detach().to(self._device),
             signal_length=N,
         )
 

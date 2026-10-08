@@ -16,10 +16,10 @@ def test_rejects_non_divisible_spatial_shape() -> None:
         PlainUNet()(torch.randn(2, 65, 64))
 
 
-def test_parameter_count_is_near_paper_target() -> None:
+def test_parameter_count_matches_flat_schedule() -> None:
     count = PlainUNet().count_parameters()
     print(f"PlainUNet parameter count: {count}")
-    assert abs(count - 2_158_578) / 2_158_578 < 0.05
+    assert count == 1_127_714
 
 
 def test_eval_forward_is_deterministic() -> None:

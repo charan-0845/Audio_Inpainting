@@ -15,7 +15,6 @@ class MultiResBlock(nn.Module):
 
     Factorizes 5x5 and 7x7 convolutions into three consecutive 3x3 convolutions,
     concatenates intermediate multi-resolution features, and adds a 1x1 residual shortcut.
-    Uses GroupNorm(1, C) to match the PlainUNet normalization choice.
     Supports optional HarmonicConv2d when use_harmonic=True.
     """
 
@@ -27,12 +26,13 @@ class MultiResBlock(nn.Module):
         filter_ratios: Tuple[float, float, float] = (1 / 6, 2 / 6, 3 / 6),
         negative_slope: float = 0.01,
         use_harmonic: bool = False,
-        anchor: int = 1,
+        harmonic_anchors: dict = None,
+        norm: str = "batch",
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.use_harmonic = use_harmonic
-        self.anchor = anchor
+        self.harmonic_anchors = harmonic_anchors or {}
 
         W = alpha * out_channels
         w1 = max(1, int(round(W * filter_ratios[0])))
@@ -42,32 +42,44 @@ class MultiResBlock(nn.Module):
         self.w1, self.w2, self.w3 = w1, w2, w3
         self.out_channels = w1 + w2 + w3
 
-        def _make_conv(in_c: int, out_c: int, kernel: int) -> nn.Module:
+        def _make_conv(in_c: int, out_c: int, kernel: int, anchor_val: int) -> nn.Module:
             if use_harmonic:
-                return HarmonicConv2d(in_c, out_c, kernel, anchor=anchor, padding="same", bias=False)
+                return HarmonicConv2d(in_c, out_c, kernel, anchor=anchor_val, padding="same", bias=False)
             return nn.Conv2d(in_c, out_c, kernel, padding=kernel // 2, bias=False)
 
+        def _make_norm(num_channels: int) -> nn.Module:
+            if norm == "batch":
+                return nn.BatchNorm2d(num_channels)
+            elif norm == "group":
+                return nn.GroupNorm(1, num_channels)
+            raise ValueError(f"Unknown norm type: {norm}")
+
+        a_c1 = self.harmonic_anchors.get("multires.conv1", 1)
+        a_c2 = self.harmonic_anchors.get("multires.conv2", 2)
+        a_c3 = self.harmonic_anchors.get("multires.conv3", 3)
+        a_res = self.harmonic_anchors.get("multires.residual", 1)
+
         self.conv3x3_1 = nn.Sequential(
-            _make_conv(in_channels, w1, 3),
-            nn.GroupNorm(1, w1),
+            _make_conv(in_channels, w1, 3, a_c1),
+            _make_norm(w1),
             nn.LeakyReLU(negative_slope, inplace=True),
         )
         self.conv3x3_2 = nn.Sequential(
-            _make_conv(w1, w2, 3),
-            nn.GroupNorm(1, w2),
+            _make_conv(w1, w2, 3, a_c2),
+            _make_norm(w2),
             nn.LeakyReLU(negative_slope, inplace=True),
         )
         self.conv3x3_3 = nn.Sequential(
-            _make_conv(w2, w3, 3),
-            nn.GroupNorm(1, w3),
+            _make_conv(w2, w3, 3, a_c3),
+            _make_norm(w3),
             nn.LeakyReLU(negative_slope, inplace=True),
         )
 
         self.shortcut = nn.Sequential(
-            _make_conv(in_channels, self.out_channels, 1),
-            nn.GroupNorm(1, self.out_channels),
+            _make_conv(in_channels, self.out_channels, 1, a_res),
+            _make_norm(self.out_channels),
         )
-        self.norm = nn.GroupNorm(1, self.out_channels)
+        self.norm = _make_norm(self.out_channels)
         self.act = nn.LeakyReLU(negative_slope, inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

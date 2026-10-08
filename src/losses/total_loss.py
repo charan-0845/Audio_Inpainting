@@ -1,4 +1,4 @@
-﻿"""Total loss builder combining masked MSE and multi-scale spectrogram loss.
+"""Total loss builder combining masked MSE and multi-scale spectrogram loss.
 
 Use :func:`build_loss` to get a callable ``(pred, target, mask) -> scalar``
 that combines the two terms according to ``configs/config.yaml``:
@@ -20,7 +20,7 @@ Design notes
   :func:`multiscale_spectrogram_loss`.  The inverse STFT parameters are
   taken from the closure-captured STFT config so the caller does not need
   to pass them.
-* The reference waveform is passed into the closure detached, and is used
+* The corrupted waveform is passed into the closure detached, and is used
   only inside the MSS term (never in the MSE loss computation).
 """
 
@@ -42,8 +42,8 @@ LossFn = Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
 def build_loss(
     cfg: Dict,
     stft_cfg: Optional[Dict] = None,
-    clean_wav: Optional[torch.Tensor] = None,
-    frame_mask: Optional[torch.Tensor] = None,
+    corrupted_wav: Optional[torch.Tensor] = None,
+    sample_mask: Optional[torch.Tensor] = None,
     signal_length: Optional[int] = None,
 ) -> LossFn:
     """Build a combined MSE + MSS loss callable from the config dict.
@@ -63,16 +63,16 @@ def build_loss(
       1. Applies the mask to the prediction channels (zero out missing frames).
       2. Inverts the masked STFT to a waveform.
       3. Calls :func:`multiscale_spectrogram_loss` against the detached
-         *clean_wav* (passed via closure – never affects MSE gradient).
+         *corrupted_wav* (passed via closure – never affects MSE gradient).
       4. Returns ``alpha_mse * MSE + alpha_mss * MSS``.
 
     Args:
         cfg: Full config dict (must contain ``loss`` sub-dict).
         stft_cfg: STFT parameters dict with keys ``n_fft``, ``hop_length``,
             ``win_length``.  Required when ``use_mss`` is True.
-        clean_wav: Detached clean waveform ``(N,)``.  Required when
+        corrupted_wav: Detached corrupted waveform ``(N,)``.  Required when
             ``use_mss`` is True (used only as MSS reference).
-        frame_mask: Frame mask ``(L,)`` passed to
+        sample_mask: Sample-level mask ``(N,)`` passed to
             :func:`multiscale_spectrogram_loss` so missing frames are
             excluded from MSS.  Optional even when ``use_mss`` is True.
         signal_length: Original waveform length ``N`` passed to
@@ -97,17 +97,17 @@ def build_loss(
     # --- MSS is enabled: validate required arguments ---
     if stft_cfg is None:
         raise ValueError("stft_cfg is required when loss.use_mss is True")
-    if clean_wav is None:
-        raise ValueError("clean_wav is required when loss.use_mss is True")
+    if corrupted_wav is None:
+        raise ValueError("corrupted_wav is required when loss.use_mss is True")
     if signal_length is None:
         raise ValueError("signal_length is required when loss.use_mss is True")
 
     _n_fft = int(stft_cfg["n_fft"])
     _hop = int(stft_cfg["hop_length"])
     _win = int(stft_cfg["win_length"])
-    _clean_wav = clean_wav.detach()
+    _corrupted_wav = corrupted_wav.detach()
     _signal_length = int(signal_length)
-    _frame_mask = frame_mask.detach() if frame_mask is not None else None
+    _sample_mask = sample_mask.detach() if sample_mask is not None else None
 
     def _combined_loss(
         pred: torch.Tensor,
@@ -116,8 +116,23 @@ def build_loss(
     ) -> torch.Tensor:
         mse_val = masked_mse(pred, target, mask)
 
+        # Unpad frequency dimension if necessary before STFT inversion
+        target_freq_bins = _n_fft // 2 + 1
+        
+        if pred.ndim == 3:
+            unpadded_pred = pred[:, :target_freq_bins, :]
+        else:
+            unpadded_pred = pred[:, :, :target_freq_bins, :]
+            
+        if mask.ndim == 2:
+            unpadded_mask = mask[:target_freq_bins, :]
+        elif mask.ndim == 3:
+            unpadded_mask = mask[:, :target_freq_bins, :]
+        else:
+            unpadded_mask = mask[:, :, :target_freq_bins, :]
+
         # Invert the *masked* prediction (zero out lost TF bins, then iSTFT)
-        masked_pred = pred * mask
+        masked_pred = unpadded_pred * unpadded_mask
         pred_stft = channels_to_stft(masked_pred)
         pred_wav = inverse_stft(
             pred_stft,
@@ -129,8 +144,8 @@ def build_loss(
 
         mss_val = multiscale_spectrogram_loss(
             pred_wav,
-            _clean_wav.to(pred_wav.device),
-            frame_mask=_frame_mask,
+            _corrupted_wav.to(pred_wav.device),
+            sample_mask=_sample_mask,
         )
         return alpha_mse * mse_val + alpha_mss * mss_val
 

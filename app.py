@@ -245,13 +245,13 @@ def _cmd_inpaint(args: argparse.Namespace) -> None:
 
 BENCHMARK_CSV_FIELDS = [
     "variant", "tier", "clip", "type", "level_ms", "seed", "epochs",
-    "nmse_tot_db", "nmse_miss_db", "pesq_delta", "runtime_s", "git", "note",
+    "nmse_tot_lin", "nmse_miss_lin", "pesq_delta", "pesq_mode", "runtime_s", "git", "note",
 ]
 
 
-def _benchmark_nmse_db(ref: np.ndarray, est: np.ndarray,
+def _benchmark_nmse_lin(ref: np.ndarray, est: np.ndarray,
                         sel: Optional[np.ndarray] = None) -> float:
-    """10*log10(NMSE + 1e-12), matching run_benchmark.nmse_db exactly.
+    """Compute NMSE in linear scale.
 
     Args:
         ref: Reference waveform.
@@ -259,11 +259,11 @@ def _benchmark_nmse_db(ref: np.ndarray, est: np.ndarray,
         sel: Optional boolean array selecting a subset of samples.
 
     Returns:
-        NMSE in dB.
+        NMSE (linear scale).
     """
     if sel is not None:
         ref, est = ref[sel], est[sel]
-    return float(10 * np.log10(((ref - est) ** 2).sum() / (ref ** 2).sum() + 1e-12))
+    return float(((ref - est) ** 2).sum() / ((ref ** 2).sum() + 1e-12))
 
 
 def _benchmark_pesq(clean: np.ndarray, corrupted: np.ndarray,
@@ -387,13 +387,14 @@ def _cmd_benchmark(args: argparse.Namespace) -> None:
                     "level_ms": level,
                     "seed": seed,
                     "epochs": epochs,
-                    "nmse_tot_db": round(_benchmark_nmse_db(clean, recon), 3),
-                    "nmse_miss_db": round(_benchmark_nmse_db(clean, recon, missing), 3),
+                    "nmse_tot_lin": round(_benchmark_nmse_lin(clean, recon), 5),
+                    "nmse_miss_lin": round(_benchmark_nmse_lin(clean, recon, missing), 5),
                     "pesq_delta": (
                         _benchmark_pesq(clean, corrupted, recon, sr)
                         if clip["type"] == "speech" and not args.dry_run
                         else ""
                     ),
+                    "pesq_mode": "wb" if clip["type"] == "speech" and not args.dry_run else "",
                     "runtime_s": round(runtime, 1),
                     "git": commit,
                     "note": args.note + (" DUMMY" if args.dry_run else ""),
@@ -403,8 +404,8 @@ def _cmd_benchmark(args: argparse.Namespace) -> None:
                 ran += 1
                 print(
                     f"{clip['id']} g{level} s{seed}: "
-                    f"NMSE_tot={row['nmse_tot_db']} dB, "
-                    f"NMSE_miss={row['nmse_miss_db']} dB, "
+                    f"NMSE_tot={row['nmse_tot_lin']:.5f}, "
+                    f"NMSE_miss={row['nmse_miss_lin']:.5f}, "
                     f"{runtime:.0f}s",
                 )
 
@@ -433,12 +434,12 @@ def _cmd_summarize(args: argparse.Namespace) -> None:
     # De-duplicate: keep last occurrence if a (clip, level_ms, seed) appears in multiple worker files
     df = df.drop_duplicates(subset=["clip", "level_ms", "seed"], keep="last")
 
-    for col in ("nmse_tot_db", "nmse_miss_db"):
+    for col in ("nmse_tot_lin", "nmse_miss_lin"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    grp = df.groupby(["type", "level_ms"])[["nmse_tot_db", "nmse_miss_db"]]
-    summary = grp.agg(["mean", "std"]).round(3)
-    print("\n=== NMSE Summary (mean ± std, dB) ===")
+    grp = df.groupby(["type", "level_ms"])[["nmse_tot_lin", "nmse_miss_lin"]]
+    summary = grp.agg(["mean", "std"]).round(5)
+    print("\n=== NMSE Summary (mean ± std, linear) ===")
     print(summary.to_string())
     print()
 
@@ -446,10 +447,10 @@ def _cmd_summarize(args: argparse.Namespace) -> None:
     out_plot = Path(args.csv[0]).parent / "nmse_vs_gap.png"
     fig, ax = plt.subplots(figsize=(9, 5))
     for clip_type in df["type"].unique():
-        sub = df[df["type"] == clip_type].groupby("level_ms")["nmse_miss_db"].mean()
+        sub = df[df["type"] == clip_type].groupby("level_ms")["nmse_miss_lin"].mean()
         ax.plot(sub.index, sub.values, marker="o", label=clip_type)
     ax.set_xlabel("Cumulative gap duration (ms)")
-    ax.set_ylabel("NMSE_miss (dB)")
+    ax.set_ylabel("NMSE_miss (linear)")
     ax.set_title("NMSE vs. gap duration")
     ax.legend()
     ax.grid(True, alpha=0.3)

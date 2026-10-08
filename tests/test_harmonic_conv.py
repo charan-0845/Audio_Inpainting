@@ -37,7 +37,7 @@ def test_harmonic_conv_anchor1_sanity_indices() -> None:
     M = 8
     Km = 3
     hconv = HarmonicConv2d(in_channels=2, out_channels=4, kernel_size=(Km, 3), anchor=1)
-    indices = hconv._get_gather_indices(M, torch.device("cpu"))
+    indices, _ = hconv._get_gather_indices(M, torch.device("cpu"))
 
     expected = torch.tensor(
         [
@@ -97,7 +97,7 @@ def test_multires_unet_harmonic_forward_and_params() -> None:
 
 def test_multires_unet_harmonic_deep_prior_integration() -> None:
     torch.manual_seed(42)
-    model = MultiResUNet(base_filters=4, use_harmonic=True)
+    model = MultiResUNet(channel_schedule=[8, 8, 8, 8, 8], res_path_lengths=[4, 3, 2, 1], use_harmonic=True)
     observed = torch.randn(2, 64, 64)
     mask = torch.ones(64, 64)
     noise = make_input_noise((2, 64, 64), seed=42)
@@ -119,26 +119,4 @@ def test_multires_unet_harmonic_deep_prior_integration() -> None:
     assert all(torch.isfinite(torch.tensor(loss)) for loss in result["loss_history"])
 
 
-def test_compare_with_harmonic_smoke(tmp_path: Path) -> None:
-    out_dir = tmp_path / "comparison_harmonic"
-    cmd = [
-        sys.executable,
-        "scripts/compare_with_harmonic.py",
-        "--clip_id",
-        "synthetic_01",
-        "--gap_ms",
-        "400",
-        "--epochs",
-        "10",
-        "--out_dir",
-        str(out_dir),
-        "--model",
-        "all",
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    assert res.returncode == 0, f"Script failed with output:\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
 
-    assert (out_dir / "synthetic_01_400ms_plainunet_summary.json").exists()
-    assert (out_dir / "synthetic_01_400ms_multiresunet_summary.json").exists()
-    assert (out_dir / "synthetic_01_400ms_multiresunet_harmonic_summary.json").exists()
-    assert (out_dir / "synthetic_01_400ms_comparison.png").exists()

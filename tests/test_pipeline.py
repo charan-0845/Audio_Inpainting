@@ -1,4 +1,4 @@
-﻿"""Tests for the DPAIInpainter pipeline (src/pipeline/inpainter.py).
+"""Tests for the DPAIInpainter pipeline (src/pipeline/inpainter.py).
 
 All tests run on CPU in seconds because epochs=10 and the synthetic
 clip is 1 second long.
@@ -29,7 +29,8 @@ def _smoke_cfg() -> Dict[str, Any]:
     """Load the default config then apply smoke overrides for fast tests."""
     base = yaml.safe_load((REPO / "configs" / "config.yaml").read_text(encoding="utf-8"))
     base["optimization"]["epochs"] = 10
-    base["model"]["base_filters"] = 4
+    base["model"]["channel_schedule"] = [8, 8, 8, 8, 8]
+    base["model"]["res_path_lengths"] = [4, 3, 2, 1]
     base["model"]["use_harmonic"] = False
     base["pipeline"] = base.get("pipeline", {})
     base["pipeline"]["log_every"] = 5

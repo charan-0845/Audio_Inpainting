@@ -1,4 +1,4 @@
-﻿# Smoke / CI config: overrides for fast CPU testing only.
+# Smoke / CI config: overrides for fast CPU testing only.
 # Inherits everything from configs/config.yaml; values here take priority
 # when passed via `--config configs/smoke.yaml`.
 
@@ -6,7 +6,8 @@ optimization:
   epochs: 10         # tiny for CI; use config.yaml for real runs
 
 model:
-  base_filters: 4    # smaller model for speed (real runs use base_filters=7)
+  channel_schedule: [8, 8, 8, 8, 8]    # smaller model for speed
+  res_path_lengths: [4, 3, 2, 1]
   use_harmonic: false
 
 pipeline:

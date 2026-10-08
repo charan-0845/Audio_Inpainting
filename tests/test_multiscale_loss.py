@@ -1,4 +1,4 @@
-﻿"""Tests for the multi-scale spectrogram loss (multiscale_loss.py).
+"""Tests for the multi-scale spectrogram loss (multiscale_loss.py).
 
 Covers:
   - Zero loss for identical inputs.
@@ -68,17 +68,13 @@ def test_loss_ignores_masked_out_region():
     pred[N // 2 :] = 1e3  # large corruption outside the mask
     pred = pred.requires_grad_(True)
 
-    # medium-scale has 1024/120 -> ~34 frames for 4096 samples
-    # Build a mask that marks first half as observed
-    from src.audio.stft import compute_stft, frame_mask as fm_fn
     import numpy as np
     mask_np = np.ones(N, dtype=np.float32)
     mask_np[N // 2 :] = 0.0
     sm = torch.from_numpy(mask_np)
-    fmask = fm_fn(sm, n_fft=1024, hop_length=120, win_length=600)
 
     loss_masked = multiscale_spectrogram_loss(
-        pred, wav_clean, frame_mask=fmask
+        pred, wav_clean, sample_mask=sm
     )
     # Compare with unmasked loss on only the first half
     pred_half = wav_clean[: N // 2].clone().requires_grad_(True)

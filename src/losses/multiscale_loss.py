@@ -1,4 +1,4 @@
-﻿"""Multi-scale spectrogram loss (MSS) for audio inpainting.
+"""Multi-scale spectrogram loss (MSS) for audio inpainting.
 
 Implements the multi-scale spectrogram loss described in Table II of:
   Miotello et al., "Deep Prior-Based Audio Inpainting Using
@@ -25,13 +25,15 @@ from typing import List, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
+from src.audio.stft import frame_mask
+
 
 # ---------------------------------------------------------------------------
 # Default STFT scales  (Table II, 16 kHz)
 # ---------------------------------------------------------------------------
 
 DEFAULT_SCALES: List[Tuple[int, int, int]] = [
-    (256, 240, 60),    # fine
+    (512, 240, 50),    # fine
     (1024, 600, 120),  # medium
     (2048, 1200, 240), # coarse
 ]
@@ -79,7 +81,7 @@ def _single_scale_loss(
     win_length: int,
     hop_length: int,
     eps: float = 1e-8,
-    frame_mask: Optional[torch.Tensor] = None,
+    sample_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute the four-term spectral loss at a single STFT scale.
 
@@ -90,8 +92,8 @@ def _single_scale_loss(
         win_length: Window length.
         hop_length: Hop size.
         eps: Floor for log and denominators.
-        frame_mask: 1-D frame mask ``(L_ref,)`` (1=observed, 0=missing).
-            Resampled nearest-neighbour when L differs across scales.
+        sample_mask: 1-D sample-level mask ``(N,)`` (1=observed, 0=missing).
+            Accurately converted to frame mask using this scale's params.
 
     Returns:
         Scalar loss tensor.
@@ -104,13 +106,8 @@ def _single_scale_loss(
 
     M, L = X_hat_mag.shape
 
-    if frame_mask is not None:
-        if frame_mask.shape[0] != L:
-            fm = frame_mask.float().unsqueeze(0).unsqueeze(0)
-            fm = F.interpolate(fm, size=(L,), mode="nearest").squeeze()
-            fm = (fm > 0.5).float()
-        else:
-            fm = frame_mask.float()
+    if sample_mask is not None:
+        fm = frame_mask(sample_mask, n_fft=n_fft, hop_length=hop_length, win_length=win_length)
         S = fm.unsqueeze(0).expand(M, -1)
     else:
         S = torch.ones(M, L, device=pred_wav.device, dtype=pred_wav.dtype)
@@ -144,7 +141,7 @@ def multiscale_spectrogram_loss(
     target_wav: torch.Tensor,
     scales: Optional[List[Tuple[int, int, int]]] = None,
     eps: float = 1e-8,
-    frame_mask: Optional[torch.Tensor] = None,
+    sample_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute multi-scale spectrogram reconstruction loss (MSS).
 
@@ -160,9 +157,8 @@ def multiscale_spectrogram_loss(
         scales: List of ``(n_fft, win_length, hop_length)`` tuples.
             Defaults to :data:`DEFAULT_SCALES` (Table II, 16 kHz).
         eps: Small floor for log / denominator stability.
-        frame_mask: Optional 1-D frame mask ``(L,)`` at the medium scale
-            (index 1).  Missing frames are excluded from the loss at all
-            scales via nearest-neighbour resampling.
+        sample_mask: Optional 1-D sample mask ``(N,)``.
+            Accurately converted to per-scale frame masks.
 
     Returns:
         Scalar tensor – mean multi-scale spectrogram loss.
@@ -175,6 +171,6 @@ def multiscale_spectrogram_loss(
         total = total + _single_scale_loss(
             pred_wav, target_wav,
             n_fft=n_fft, win_length=win_length, hop_length=hop_length,
-            eps=eps, frame_mask=frame_mask,
+            eps=eps, sample_mask=sample_mask,
         )
     return total / len(scales)

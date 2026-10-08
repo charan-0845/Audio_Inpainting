@@ -1,4 +1,4 @@
-﻿audio:
+audio:
   sample_rate: 16000
   duration_seconds: 5
   mono: true
@@ -19,18 +19,23 @@ model:
   name: multiresunet
   input_channels: 2
   output_channels: 2
-  base_filters: 7          # paper: filter counts 21/43/64 per block (alpha=1.6 * 7)
+  channel_schedule: [68, 68, 68, 68, 68] # paper: no doubling (21/43/64 per level). ~2,013,662 params
+  res_path_lengths: [4, 3, 2, 1]
+  norm: "batch"            # "batch" or "group"
   alpha: 1.6               # MultiRes width multiplier
-  negative_slope: 0.01     # LeakyReLU slope (GroupNorm(1,C) used, not BatchNorm)
+  negative_slope: 0.01     # LeakyReLU slope
   # use_harmonic=true enables HarmonicConv2d in the encoder; decoders remain regular Conv2d
   use_harmonic: true
   harmonic_anchors:
-    # Anchor 1 at every block = anchor at DC (bin 1 in 1-based indexing).
-    # Per-block anchors are an open item: Table I is partially illegible in the source PDF.
-    # To configure per-block anchors, pass a dict here or extend MultiResUNet to accept a list.
-    default: 1
-    res_path_residual: 1
-    downsampling_conv1: 1
+    # Table I is partially illegible. Legible values (set to 1):
+    respath.residual: 1
+    downsample.conv1: 1
+    # Placeholder assumptions for illegible values (NOT paper values):
+    multires.residual: 1
+    multires.conv1: 1
+    multires.conv2: 2
+    multires.conv3: 3
+    respath.conv1: 1
 
 optimization:
   epochs: 5000
@@ -40,9 +45,9 @@ optimization:
   perturbation_variance: 0.03  # per-iteration Gaussian perturbation variance
 
 loss:
-  use_mss: false     # false = MSE-only (paper default, reproducible); true = MSE+MSS
+  use_mss: true      # true = MSE+MSS (paper default)
   alpha_mse: 1.0     # weight for masked MSE term
-  alpha_mss: 0.1     # weight for multi-scale spectrogram term (only when use_mss=true)
+  alpha_mss: 0.1     # weight for multi-scale spectrogram term
 
 pipeline:
   preserve_observed: false  # false = paper default; true = paste back observed samples post-inpaint

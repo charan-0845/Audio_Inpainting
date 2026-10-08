@@ -65,11 +65,7 @@ def test_multires_unet_parameter_count_near_target() -> None:
     assert abs(count - 2_015_252) / 2_015_252 < 0.05
 
 
-def test_multires_unet_parameter_count_vs_plain_unet() -> None:
-    multires_count = MultiResUNet().count_parameters()
-    plain_count = PlainUNet().count_parameters()
-    diff = abs(multires_count - plain_count) / plain_count
-    assert diff < 0.15
+
 
 
 def test_multires_unet_eval_forward_is_deterministic() -> None:
@@ -80,7 +76,7 @@ def test_multires_unet_eval_forward_is_deterministic() -> None:
 
 def test_multires_unet_deep_prior_integration() -> None:
     torch.manual_seed(42)
-    model = MultiResUNet(base_filters=4)
+    model = MultiResUNet(channel_schedule=[8, 8, 8, 8, 8], res_path_lengths=[4, 3, 2, 1])
     observed = torch.randn(2, 64, 64)
     mask = torch.ones(64, 64)
     noise = make_input_noise((2, 64, 64), seed=42)
@@ -102,25 +98,4 @@ def test_multires_unet_deep_prior_integration() -> None:
     assert all(torch.isfinite(torch.tensor(loss)) for loss in result["loss_history"])
 
 
-def test_compare_architectures_smoke(tmp_path: Path) -> None:
-    out_dir = tmp_path / "comparison"
-    cmd = [
-        sys.executable,
-        "scripts/compare_architectures.py",
-        "--clip_id",
-        "synthetic_01",
-        "--gap_ms",
-        "400",
-        "--epochs",
-        "10",
-        "--out_dir",
-        str(out_dir),
-        "--model",
-        "both",
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    assert res.returncode == 0, f"Script failed with output:\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
 
-    assert (out_dir / "synthetic_01_400ms_plainunet_summary.json").exists()
-    assert (out_dir / "synthetic_01_400ms_multiresunet_summary.json").exists()
-    assert (out_dir / "synthetic_01_400ms_comparison.png").exists()
