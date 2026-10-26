@@ -375,3 +375,26 @@ def test_demo_only_mode_disables_submitting_jobs():
         )
         assert resp.status_code == 403
         assert "demo_only" in resp.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Static files test
+# ---------------------------------------------------------------------------
+
+def test_static_files_served():
+    cfg = _smoke_cfg()
+    app = create_app(base_cfg=cfg, device="cpu")
+    client = TestClient(app)
+
+    # Root serves index.html
+    root_resp = client.get("/")
+    assert root_resp.status_code == 200
+    assert "DPAI Audio Inpainter" in root_resp.text
+
+    # app.js and style.css
+    js_resp = client.get("/app.js")
+    assert js_resp.status_code == 200
+
+    css_resp = client.get("/style.css")
+    assert css_resp.status_code == 200
+

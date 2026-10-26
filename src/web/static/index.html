@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DPAI – Deep Prior Audio Inpainter</title>
+  <meta name="description" content="Audio inpainting using Deep Image Prior and Multi-Resolution Harmonic CNNs (Miotello et al., TASLP 2024)">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="logo-mark">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M2 10v3M6 6v11M10 3v18M14 8v7M18 5v13M22 10v4"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="app-title">DPAI Audio Inpainter</h1>
+          <p class="app-subtitle">Deep Prior-Based Audio Inpainting via Multi-Resolution Harmonic CNNs</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="tab-nav">
+          <button id="tab-btn-studio" class="tab-btn active">Interactive Studio</button>
+          <button id="tab-btn-gallery" class="tab-btn">Precomputed Gallery</button>
+        </div>
+        <div id="server-badge" class="badge badge-idle">
+          <span class="pulse-dot"></span>
+          <span id="server-status-text">Connecting...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+
+      <!-- ================= STUDIO TAB ================= -->
+      <section id="section-studio" class="tab-section active">
+        <div class="grid-layout">
+          
+          <!-- Left Column: Input, Waveform & Gaps -->
+          <div class="card panel-left">
+            <div class="panel-header">
+              <h2>1. Audio & Gap Selection</h2>
+              <span class="tag">Max 10s • 16 kHz</span>
+            </div>
+
+            <!-- Upload Area -->
+            <div class="upload-zone-wrapper">
+              <div id="drop-zone" class="drop-zone">
+                <input type="file" id="audio-input" accept="audio/*,.wav,.mp3,.flac,.ogg" class="hidden-input">
+                <svg class="upload-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                </svg>
+                <div class="upload-text">
+                  <p class="primary-text">Drag & drop audio or <span class="highlight">browse</span></p>
+                  <p class="secondary-text">WAV, MP3, FLAC (auto-resampled to 16 kHz mono)</p>
+                </div>
+              </div>
+              <div class="quick-samples">
+                <span>Or try:</span>
+                <button type="button" id="btn-synthetic" class="btn-sample">Synthetic 440 Hz Sine</button>
+                <button type="button" id="btn-piano-sample" class="btn-sample">Piano Note</button>
+              </div>
+            </div>
+
+            <!-- Optional Reference -->
+            <div class="ref-upload-row">
+              <label for="reference-input" class="ref-label">
+                <span>Clean Reference (optional, for NMSE/PESQ evaluation):</span>
+              </label>
+              <input type="file" id="reference-input" accept="audio/*" class="file-mini">
+              <span id="ref-status" class="ref-status-text">None</span>
+            </div>
+
+            <!-- Waveform Canvas & Controls -->
+            <div id="waveform-container" class="waveform-container hidden">
+              <div class="waveform-header">
+                <div class="audio-meta">
+                  <span id="clip-name-display" class="clip-name">audio.wav</span>
+                  <span id="clip-dur-display" class="clip-dur">0.00s</span>
+                </div>
+                <div class="waveform-actions">
+                  <button type="button" id="btn-play-preview" class="btn-icon" title="Play Preview Audio">
+                    <svg id="play-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                      <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                    <span id="play-btn-text">Play</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Interactive Drag Canvas -->
+              <div class="canvas-wrapper">
+                <canvas id="waveform-canvas" width="800" height="160"></canvas>
+                <div id="drag-overlay" class="drag-hint">Click & drag on waveform to mark corrupted gaps</div>
+              </div>
+
+              <!-- Gap Controls -->
+              <div class="gap-toolbar">
+                <div class="gap-tools-left">
+                  <button type="button" id="btn-random-gaps" class="btn-outline-sm">Random Gaps</button>
+                  <button type="button" id="btn-detect-gaps" class="btn-outline-sm">Auto-Detect Silence</button>
+                  <button type="button" id="btn-clear-gaps" class="btn-outline-sm text-danger">Clear Gaps</button>
+                </div>
+                <div class="gap-stats" id="gap-stats-bar">
+                  <span>Missing: <strong id="stat-missing-ms">0 ms</strong> (<span id="stat-missing-pct">0.0%</span>)</span>
+                </div>
+              </div>
+
+              <!-- Gaps List -->
+              <div id="gaps-list" class="gaps-list"></div>
+
+              <!-- Validation Warning Box -->
+              <div id="validation-box" class="callout callout-warning hidden">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/>
+                </svg>
+                <span id="validation-msg">Gaps exceed maximum limit.</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Column: Settings & Execution -->
+          <div class="card panel-right">
+            <div class="panel-header">
+              <h2>2. Configuration & Run</h2>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="preset-select">Optimization Preset</label>
+              <div class="preset-cards">
+                <label class="preset-card">
+                  <input type="radio" name="preset" value="fast" id="preset-fast">
+                  <div class="preset-content">
+                    <span class="preset-title">Fast Preview</span>
+                    <span class="preset-desc">300 epochs • 4 filters • No harmonic</span>
+                    <span class="preset-speed">~5-15s CPU</span>
+                  </div>
+                </label>
+                <label class="preset-card selected">
+                  <input type="radio" name="preset" value="balanced" id="preset-balanced" checked>
+                  <div class="preset-content">
+                    <span class="preset-title">Balanced</span>
+                    <span class="preset-desc">1,500 epochs • Full MultiResUNet</span>
+                    <span class="preset-speed">Recommended</span>
+                  </div>
+                </label>
+                <label class="preset-card">
+                  <input type="radio" name="preset" value="paper" id="preset-paper">
+                  <div class="preset-content">
+                    <span class="preset-title">Paper Standard</span>
+                    <span class="preset-desc">5,000 epochs • Full paper params</span>
+                    <span class="preset-speed">Best quality</span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group col">
+                <label class="form-label" for="epochs-override">Epochs Override (optional)</label>
+                <input type="number" id="epochs-override" placeholder="Default from preset" min="1" max="10000" class="input-text">
+              </div>
+              <div class="form-group col">
+                <label class="form-label" for="seed-input">Random Seed</label>
+                <input type="number" id="seed-input" value="0" min="0" max="999999" class="input-text">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label" for="check-preserve-observed">
+                <input type="checkbox" id="check-preserve-observed" checked>
+                <div class="checkbox-text">
+                  <strong>Paste back observed samples post-inpaint</strong>
+                  <span class="note-subtext">(Recommended; maintains bit-exact original signal in observed regions. Deviation from original paper).</span>
+                </div>
+              </label>
+            </div>
+
+            <!-- Run / Cancel Buttons -->
+            <div class="action-bar">
+              <button type="button" id="btn-run" class="btn-primary" disabled>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+                <span>Run Inpainting</span>
+              </button>
+              <button type="button" id="btn-cancel" class="btn-danger hidden">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                </svg>
+                <span>Cancel</span>
+              </button>
+            </div>
+
+            <!-- Progress & Monitor -->
+            <div id="progress-container" class="progress-container hidden">
+              <div class="progress-header">
+                <div class="progress-title-row">
+                  <span id="progress-status-badge" class="badge badge-running">Running</span>
+                  <span id="progress-eta-text" class="eta-text">ETA: Calculating...</span>
+                </div>
+                <span id="progress-epoch-counter" class="epoch-counter">0 / 300</span>
+              </div>
+              <div class="progress-bar-track">
+                <div id="progress-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
+              </div>
+
+              <!-- Live Loss Chart & Spectrogram Preview -->
+              <div class="live-visualizers">
+                <div class="viz-box">
+                  <span class="viz-title">Live Training Loss</span>
+                  <canvas id="loss-canvas" width="280" height="130"></canvas>
+                  <span id="current-loss-text" class="loss-label">loss: --</span>
+                </div>
+                <div class="viz-box">
+                  <span class="viz-title">In-Progress Spectrogram</span>
+                  <div class="spectrogram-frame">
+                    <img id="live-spec-img" alt="Live Spectrogram Preview" class="spec-img-placeholder">
+                    <span id="spec-placeholder-text">Waiting for epoch 1 preview...</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Step 3: Completed Results Section -->
+        <div id="results-section" class="card results-card hidden">
+          <div class="panel-header">
+            <div>
+              <h2>3. Inpainting Reconstruction Results</h2>
+              <p class="run-id-subtext">Run ID: <code id="result-run-id">--</code></p>
+            </div>
+            <div class="download-group">
+              <a id="btn-download-wav" href="#" download="reconstruction.wav" class="btn-outline-sm">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                </svg>
+                Download Reconstructed WAV
+              </a>
+            </div>
+          </div>
+
+          <!-- Honest Note Callout -->
+          <div class="callout callout-info">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="16" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            <div>
+              <strong>Note on Deep Prior Inpainting:</strong>
+              This model performs per-clip optimization without external dataset pretraining. It excels on harmonic structures and short gaps (≤ 100 ms). Quality degrades on long unobserved gaps or complex non-stationary transients.
+            </div>
+          </div>
+
+          <!-- A/B Comparison Player -->
+          <div class="player-container">
+            <div class="ab-switch-bar">
+              <span class="ab-label">Audio Switch:</span>
+              <div class="toggle-group">
+                <button type="button" id="btn-ab-reconstructed" class="btn-toggle active">Inpainted (Reconstructed)</button>
+                <button type="button" id="btn-ab-corrupted" class="btn-toggle">Corrupted (With Gaps)</button>
+                <button type="button" id="btn-ab-clean" class="btn-toggle hidden">Clean Reference</button>
+              </div>
+            </div>
+            <div class="audio-player-ui">
+              <audio id="audio-playback" controls class="native-player"></audio>
+            </div>
+          </div>
+
+          <!-- Metrics Row -->
+          <div id="metrics-panel" class="metrics-grid">
+            <div class="metric-card">
+              <span class="metric-label">Runtime</span>
+              <span id="metric-runtime" class="metric-value">-- s</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Epochs Run</span>
+              <span id="metric-epochs" class="metric-value">--</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Model Parameters</span>
+              <span id="metric-params" class="metric-value">--</span>
+            </div>
+            <div id="metric-card-nmse" class="metric-card hidden">
+              <span class="metric-label">NMSE Total</span>
+              <span id="metric-nmse-tot" class="metric-value highlight-val">-- dB</span>
+            </div>
+            <div id="metric-card-miss" class="metric-card hidden">
+              <span class="metric-label">NMSE Missing Gap</span>
+              <span id="metric-nmse-miss" class="metric-value highlight-val">-- dB</span>
+            </div>
+          </div>
+
+          <!-- Spectrogram Comparison Gallery -->
+          <div class="spectrogram-gallery">
+            <div class="spec-column">
+              <h3>Corrupted Spectrogram</h3>
+              <div class="img-frame">
+                <img id="img-spec-corrupted" alt="Corrupted Spectrogram">
+              </div>
+            </div>
+            <div class="spec-column">
+              <h3>Reconstructed Spectrogram</h3>
+              <div class="img-frame">
+                <img id="img-spec-reconstructed" alt="Reconstructed Spectrogram">
+              </div>
+            </div>
+            <div id="col-spec-clean" class="spec-column hidden">
+              <h3>Clean Reference Spectrogram</h3>
+              <div class="img-frame">
+                <img id="img-spec-clean" alt="Clean Spectrogram">
+              </div>
+            </div>
+          </div>
+
+          <!-- Final Loss Curve Image -->
+          <div class="loss-curve-section">
+            <h3>Full Optimization Loss Curve</h3>
+            <div class="loss-img-frame">
+              <img id="img-loss-curve" alt="Optimization Loss Curve">
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ================= GALLERY TAB ================= -->
+      <section id="section-gallery" class="tab-section">
+        <div class="card">
+          <div class="panel-header">
+            <div>
+              <h2>Precomputed Examples Gallery</h2>
+              <p class="section-desc">Explore verified benchmark audio inpaintings produced with MultiResUNet without waiting for optimization.</p>
+            </div>
+          </div>
+          <div id="gallery-grid" class="gallery-grid">
+            <div class="loading-spinner">Loading gallery examples...</div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <span>DPAI • Audio Inpainting using Deep Prior and Multi-Resolution Harmonic CNNs</span>
+      <span>IEEE/ACM TASLP 2024</span>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
