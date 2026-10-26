@@ -97,3 +97,66 @@ def test_same_seed_is_deterministic_and_perturbation_is_fresh() -> None:
         generator=torch.Generator().manual_seed(2),
     )
     assert not torch.equal(model.inputs[0], model.inputs[1])
+
+
+def test_progress_callback_receives_expected_arguments_and_preserves_determinism() -> None:
+    target = torch.randn(2, 64, 64)
+    res_no_cb = _run(target)
+
+    recorded_epochs = []
+    recorded_losses = []
+
+    def cb(epoch, epochs, loss, output):
+        recorded_epochs.append((epoch, epochs))
+        recorded_losses.append(loss)
+        assert output.shape == (2, 64, 64)
+        assert not output.requires_grad
+
+    torch.manual_seed(10)
+    model = PlainUNet(channel_schedule=[8, 8, 8, 8, 8])
+    noise_generator = torch.Generator().manual_seed(20)
+    noise = make_input_noise((2, 64, 64), seed=21)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
+    res_with_cb = optimize_deep_prior(
+        model,
+        noise,
+        target,
+        torch.ones(64, 64),
+        optimizer,
+        epochs=20,
+        log_every=5,
+        generator=noise_generator,
+        progress_callback=cb,
+    )
+
+    # Identical loss histories (bit-for-bit unchanged)
+    assert res_no_cb["loss_history"] == res_with_cb["loss_history"]
+    assert recorded_losses == res_with_cb["loss_history"]
+    assert recorded_epochs == [(i, 20) for i in range(20)]
+
+
+def test_progress_callback_cancellation_propagates() -> None:
+    target = torch.randn(2, 64, 64)
+
+    def cancel_at_epoch_2(epoch, epochs, loss, output):
+        if epoch == 2:
+            raise RuntimeError("Cancelled by client")
+
+    torch.manual_seed(10)
+    model = PlainUNet(channel_schedule=[8, 8, 8, 8, 8])
+    noise_generator = torch.Generator().manual_seed(20)
+    noise = make_input_noise((2, 64, 64), seed=21)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
+
+    import pytest
+    with pytest.raises(RuntimeError, match="Cancelled by client"):
+        optimize_deep_prior(
+            model,
+            noise,
+            target,
+            torch.ones(64, 64),
+            optimizer,
+            epochs=10,
+            generator=noise_generator,
+            progress_callback=cancel_at_epoch_2,
+        )

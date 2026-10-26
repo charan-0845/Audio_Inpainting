@@ -200,3 +200,37 @@ def test_cli_inpaint_creates_expected_artifacts():
         produced = {p.name for p in run_dir.iterdir()}
         missing = expected_files - produced
         assert not missing, f"Missing artifacts: {missing}\nProduced: {produced}"
+
+
+def test_inpaint_callbacks_and_cancellation():
+    """inpaint() forwards callbacks, preserves determinism, and propagates cancellation."""
+    from src.pipeline.inpainter import DPAIInpainter
+
+    sr = 16000
+    wav = _make_1s_clip(sr)
+    mask = _make_mask(len(wav))
+    corrupted = wav * mask
+    cfg = _smoke_cfg()
+
+    inpainter = DPAIInpainter(cfg, device="cpu")
+    r_baseline = inpainter.inpaint(corrupted, mask, epochs=5, seed=42)
+
+    recorded_epochs = []
+    recorded_losses = []
+
+    def cb(epoch, epochs, loss, output):
+        recorded_epochs.append((epoch, epochs))
+        recorded_losses.append(loss)
+
+    r_cb = inpainter.inpaint(corrupted, mask, epochs=5, seed=42, callbacks=[cb])
+    assert r_cb.loss_history == r_baseline.loss_history
+    assert recorded_losses == r_baseline.loss_history
+    assert recorded_epochs == [(i, 5) for i in range(5)]
+
+    def cancel_cb(epoch, epochs, loss, output):
+        if epoch == 2:
+            raise RuntimeError("Stop pipeline")
+
+    with pytest.raises(RuntimeError, match="Stop pipeline"):
+        inpainter.inpaint(corrupted, mask, epochs=5, seed=42, callbacks=[cancel_cb])
+

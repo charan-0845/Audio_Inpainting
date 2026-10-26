@@ -29,6 +29,7 @@ def optimize_deep_prior(
     generator: torch.Generator | None = None,
     include_model_state: bool = False,
     loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]] = None,
+    progress_callback: Optional[Callable[[int, int, float, torch.Tensor], None]] = None,
 ) -> dict[str, Any]:
     """Fit a network to observed spectrogram regions for one sample.
 
@@ -55,6 +56,10 @@ def optimize_deep_prior(
             When ``None`` (default), :func:`~src.losses.masked_mse.masked_mse`
             is used directly, giving bit-for-bit identical behaviour to the
             original implementation.  All existing tests pass with ``None``.
+        progress_callback: Optional callable ``(epoch, epochs, loss, output)``.
+            Called after each epoch with the 0-indexed epoch, total epochs,
+            scalar loss value, and detached output tensor. May raise an
+            exception to trigger cancellation.
 
     Returns:
         Dict with keys:
@@ -101,6 +106,9 @@ def optimize_deep_prior(
             with torch.no_grad():
                 diagnostic = masked_mse(output.detach(), reference, 1.0 - mask)
             val_loss_history.append((epoch, float(diagnostic.cpu())))
+
+        if progress_callback is not None:
+            progress_callback(epoch, epochs, loss_history[-1], output.detach())
 
     assert output is not None
     result: dict[str, Any] = {

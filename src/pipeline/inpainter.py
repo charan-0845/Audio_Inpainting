@@ -226,7 +226,7 @@ class DPAIInpainter:
         mask_padded: torch.Tensor,
         generator: torch.Generator,
         epochs: int,
-        callbacks: Optional[List[Callable]] = None,
+        callbacks: Optional[List[Callable] | Callable] = None,
         reference_padded: Optional[torch.Tensor] = None,
         loss_fn: Optional[Callable] = None,
     ) -> Dict[str, Any]:
@@ -239,8 +239,9 @@ class DPAIInpainter:
             mask_padded: Padded TF mask on device.
             generator: Seeded generator for perturbation noise.
             epochs: Number of optimisation epochs.
-            callbacks: Optional list of callables invoked after each epoch
-                (not yet forwarded to the inner loop – reserved for future use).
+            callbacks: Optional callable or list of callables invoked after each
+                epoch: ``callback(epoch, epochs, loss, output)``. Raising an
+                exception inside a callback cancels optimization and propagates.
             reference_padded: Optional clean reference channels (diagnostics
                 only; never enters the loss).
             loss_fn: Optional custom loss callable.
@@ -257,6 +258,19 @@ class DPAIInpainter:
         include_state = bool(
             self._cfg.get("pipeline", {}).get("save_checkpoint", False)
         )
+
+        progress_cb = None
+        if callbacks:
+            cbs = callbacks if isinstance(callbacks, (list, tuple)) else [callbacks]
+
+            def _composite_cb(
+                epoch: int, total_epochs: int, loss_val: float, output: torch.Tensor
+            ) -> None:
+                for cb in cbs:
+                    cb(epoch, total_epochs, loss_val, output)
+
+            progress_cb = _composite_cb
+
         return optimize_deep_prior(
             model=model,
             noise=noise,
@@ -270,6 +284,7 @@ class DPAIInpainter:
             generator=generator,
             include_model_state=include_state,
             loss_fn=loss_fn,
+            progress_callback=progress_cb,
         )
 
     def _decode(
@@ -307,7 +322,7 @@ class DPAIInpainter:
         reference: Optional[np.ndarray] = None,
         epochs: Optional[int] = None,
         seed: int = 0,
-        callbacks: Optional[List[Callable]] = None,
+        callbacks: Optional[List[Callable] | Callable] = None,
     ) -> InpaintResult:
         """Inpaint one corrupted audio clip using the deep-prior method.
 
@@ -324,7 +339,9 @@ class DPAIInpainter:
                 ``optimization.epochs`` from the config.
             seed: Integer seed controlling model init, input noise, and
                 perturbation noise sequence.
-            callbacks: Reserved for future use (not yet forwarded).
+            callbacks: Optional callable or list of callables invoked after each
+                epoch: ``callback(epoch, epochs, loss, output)``. Raising an
+                exception inside a callback cancels optimization and propagates.
 
         Returns:
             :class:`InpaintResult` containing the reconstructed waveform and
