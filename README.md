@@ -1,4 +1,4 @@
-﻿# Audio Inpainting (DPAI)
+# Audio Inpainting (DPAI)
 
 A from-scratch research implementation of **Deep Prior-Based Audio Inpainting
 Using Multi-Resolution Harmonic Convolutional Neural Networks (DPAI)**.
@@ -44,6 +44,34 @@ python app.py benchmark --tier quick --limit 3 --dry_run
 # Merge all worker CSVs and print NMSE table + save a plot:
 python app.py summarize --csv experiments/multires_harmonic/results*.csv
 ```
+
+### 4. Interactive Web Demo
+
+Install optional web dependencies (FastAPI, Uvicorn, multipart):
+
+```bash
+pip install -r requirements-web.txt
+```
+
+Launch the web demo application:
+
+```bash
+# Standard server (CUDA if available, port 8000):
+python app.py serve
+
+# Custom host, port, device, or max clip duration:
+python app.py serve --host 127.0.0.1 --port 8080 --device cpu --max_seconds 10
+
+# Demo-only mode (serves precomputed gallery and disables job execution):
+python app.py serve --demo_only
+```
+
+Once running, open `http://localhost:8000` in your browser. Features include:
+- Interactive waveform drag-to-mark corrupted gaps (red overlays), random gaps, and silence auto-detection.
+- Preset configurations: Fast Preview (300 epochs), Balanced (1,500 epochs), and Paper Standard (5,000 epochs).
+- Real-time progress bar, live loss curve, and live spectrogram preview via SSE.
+- A/B audio player (reconstruction vs. corrupted vs. optional clean reference) and side-by-side spectrograms.
+- Precomputed examples gallery (`scripts/precompute_examples.py`).
 
 ---
 

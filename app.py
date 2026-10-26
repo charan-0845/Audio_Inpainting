@@ -5,6 +5,7 @@ Subcommands
 * ``inpaint``   – inpaint one audio file and save all artefacts.
 * ``benchmark`` – run the benchmark suite with resumable CSV output.
 * ``summarize`` – merge worker CSVs and print a summary table.
+* ``serve``     – launch the interactive web demo server.
 
 Quick-start examples::
 
@@ -19,6 +20,9 @@ Quick-start examples::
 
     # Summarize results:
     python app.py summarize --csv experiments/multires_harmonic/results.csv
+
+    # Launch interactive web demo server:
+    python app.py serve --port 8000
 
 DEPRECATED SCRIPTS
 ------------------
@@ -545,7 +549,57 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sum.add_argument("--csv", nargs="+", required=True,
                        help="Path(s) to results CSV file(s).")
 
+    # -- serve -----------------------------------------------------------------
+    p_serve = sub.add_parser(
+        "serve",
+        help="Launch the interactive web demo server.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p_serve.add_argument("--host", default="127.0.0.1",
+                         help="Bind socket host.")
+    p_serve.add_argument("--port", type=int, default=8000,
+                         help="Bind socket port.")
+    p_serve.add_argument("--device", default=None,
+                         help="Device: 'cpu' or 'cuda' (default: auto).")
+    p_serve.add_argument("--config", default=None,
+                         help="Additional YAML config to merge.")
+    p_serve.add_argument("--max_seconds", type=float, default=10.0,
+                         help="Maximum audio duration allowed in seconds.")
+    p_serve.add_argument("--demo_only", action="store_true", default=False,
+                         help="Serve precomputed examples only and disable job submissions.")
+    p_serve.add_argument("--out_dir", default=None,
+                         help="Parent directory for run artefacts.")
+
     return parser
+
+
+# ---------------------------------------------------------------------------
+# ``serve`` subcommand
+# ---------------------------------------------------------------------------
+
+def _cmd_serve(args: argparse.Namespace) -> None:
+    """Launch the DPAI web demo server."""
+    import uvicorn
+    from src.web.server import create_app
+
+    cfg = _build_cfg(args)
+    device = _auto_device(args)
+    out_dir = args.out_dir or cfg.get("run", {}).get("out_dir", "outputs/runs")
+
+    app = create_app(
+        base_cfg=cfg,
+        device=device,
+        out_dir=out_dir,
+        max_seconds=float(args.max_seconds),
+        demo_only=bool(args.demo_only),
+    )
+
+    host = str(args.host)
+    port = int(args.port)
+
+    print(f"\n[DPAI Web Demo] Starting server at http://{host}:{port}")
+    print(f"  Device: {device} | Max audio length: {args.max_seconds}s | Demo only: {args.demo_only}")
+    uvicorn.run(app, host=host, port=port)
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +617,8 @@ def main() -> None:
         _cmd_benchmark(args)
     elif args.cmd == "summarize":
         _cmd_summarize(args)
+    elif args.cmd == "serve":
+        _cmd_serve(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -570,3 +626,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
