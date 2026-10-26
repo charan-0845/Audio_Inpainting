@@ -1,0 +1,64 @@
+{
+  "examples": [
+    {
+      "id": "piano_01",
+      "title": "Acoustic Piano Excerpt",
+      "clip_id": "piano_01",
+      "type": "piano",
+      "gap_ms": 200.0,
+      "epochs": 10,
+      "seed": 0,
+      "description": "Harmonic piano note with 200 ms artificial missing gaps restored via MultiResUNet.",
+      "spectrogram_url": "examples/piano_01/spec_reconstructed.png",
+      "spec_corrupted_url": "examples/piano_01/spec_corrupted.png",
+      "audio_url": "examples/piano_01/reconstruction.wav",
+      "corrupted_url": "examples/piano_01/corrupted.wav",
+      "clean_url": "examples/piano_01/clean.wav",
+      "metrics": {
+        "nmse_tot_db": 0.0008396068817341855,
+        "nmse_miss_db": 0.002887144562126794,
+        "pesq_delta": null
+      }
+    },
+    {
+      "id": "speech_01",
+      "title": "Speech Utterance",
+      "clip_id": "speech_01",
+      "type": "speech",
+      "gap_ms": 150.0,
+      "epochs": 10,
+      "seed": 42,
+      "description": "Spoken sentence with 150 ms missing intervals reconstructed without vocoder.",
+      "spectrogram_url": "examples/speech_01/spec_reconstructed.png",
+      "spec_corrupted_url": "examples/speech_01/spec_corrupted.png",
+      "audio_url": "examples/speech_01/reconstruction.wav",
+      "corrupted_url": "examples/speech_01/corrupted.wav",
+      "clean_url": "examples/speech_01/clean.wav",
+      "metrics": {
+        "nmse_tot_db": 0.0028707767180835646,
+        "nmse_miss_db": 0.007500216916914568,
+        "pesq_delta": null
+      }
+    },
+    {
+      "id": "synthetic_01",
+      "title": "Synthetic Harmonic Signal",
+      "clip_id": "synthetic_01",
+      "type": "synthetic",
+      "gap_ms": 200.0,
+      "epochs": 10,
+      "seed": 123,
+      "description": "Multi-tone synthetic waveform demonstrating reconstruction of harmonic carriers.",
+      "spectrogram_url": "examples/synthetic_01/spec_reconstructed.png",
+      "spec_corrupted_url": "examples/synthetic_01/spec_corrupted.png",
+      "audio_url": "examples/synthetic_01/reconstruction.wav",
+      "corrupted_url": "examples/synthetic_01/corrupted.wav",
+      "clean_url": "examples/synthetic_01/clean.wav",
+      "metrics": {
+        "nmse_tot_db": 0.0010898783565280227,
+        "nmse_miss_db": -0.0002657547988574044,
+        "pesq_delta": null
+      }
+    }
+  ]
+}

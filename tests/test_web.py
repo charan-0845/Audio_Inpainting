@@ -398,3 +398,11 @@ def test_static_files_served():
     css_resp = client.get("/style.css")
     assert css_resp.status_code == 200
 
+    # examples/index.json
+    ex_resp = client.get("/examples/index.json")
+    assert ex_resp.status_code == 200
+    ex_data = ex_resp.json()
+    assert "examples" in ex_data
+    assert len(ex_data["examples"]) >= 1
+
+
