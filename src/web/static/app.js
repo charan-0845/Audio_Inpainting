@@ -109,6 +109,17 @@
     setupJobExecution();
     setupAbPlayer();
     checkServerHealth();
+    restorePreviousRun();
+  }
+
+  function restorePreviousRun() {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const lastRun = urlParams.get('run_id') || localStorage.getItem('dpai_last_run_id');
+      if (lastRun) {
+        displayJobResults(lastRun, { run_id: lastRun });
+      }
+    } catch (_) {}
   }
 
   // --- Tab Navigation ---
@@ -141,6 +152,14 @@
           btnRun.title = 'Job submission is disabled in demo mode.';
         } else {
           serverStatusText.textContent = `Online • ${data.device.toUpperCase()}`;
+        }
+        if (data.device === 'cpu') {
+          const fastRadio = document.getElementById('preset-fast');
+          if (fastRadio && (!document.querySelector('input[name="preset"]:checked') || document.querySelector('input[name="preset"]:checked').value === 'balanced')) {
+            fastRadio.checked = true;
+            document.querySelectorAll('.preset-card').forEach((card) => card.classList.remove('selected'));
+            fastRadio.closest('.preset-card').classList.add('selected');
+          }
         }
       } else {
         throw new Error('Health check failed');
@@ -773,11 +792,34 @@
 
     eventSource.onerror = (err) => {
       console.warn('SSE connection interrupted:', err);
+      if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+        progressStatusBadge.textContent = 'Disconnected';
+        progressStatusBadge.className = 'badge text-danger';
+        specPlaceholderText.textContent = 'Connection to server lost. The server may have stopped or crashed.';
+        specPlaceholderText.classList.remove('hidden');
+        btnRun.disabled = false;
+        btnCancel.classList.add('hidden');
+      }
     };
   }
 
   function handleProgressEvent(event) {
-    if (event.type === 'progress') {
+    if (event.type === 'status') {
+      if (event.status === 'running') {
+        progressStatusBadge.textContent = 'Running';
+        progressStatusBadge.className = 'badge';
+        progressStatusBadge.style.color = '#38bdf8';
+        progressEpochCounter.textContent = `Epoch ${event.epoch || 0} / ${event.epochs || '...'}`;
+        specPlaceholderText.textContent = 'Optimizing deep prior... First preview arriving soon.';
+      } else if (event.status === 'queued') {
+        progressStatusBadge.textContent = 'Queued';
+        progressStatusBadge.className = 'badge badge-idle';
+        progressEpochCounter.textContent = 'Waiting in queue...';
+      }
+    } else if (event.type === 'progress') {
+      progressStatusBadge.textContent = 'Running';
+      progressStatusBadge.className = 'badge';
+      progressStatusBadge.style.color = '#38bdf8';
       const epoch = event.epoch;
       const totalEpochs = event.epochs;
       const pct = Math.min(100, (epoch / totalEpochs) * 100);
@@ -868,21 +910,30 @@
   // --- Display Results ---
   async function displayJobResults(jobId, eventData) {
     resultsSection.classList.remove('hidden');
-    resultRunId.textContent = eventData.run_id || jobId;
+    const effectiveId = (eventData && eventData.run_id) ? eventData.run_id : jobId;
+    resultRunId.textContent = effectiveId;
+    try {
+      localStorage.setItem('dpai_last_run_id', effectiveId);
+    } catch (_) {}
 
     // Fetch full job data
     let job = null;
     try {
-      const resp = await fetch(`/api/jobs/${jobId}`);
+      let resp = await fetch(`/api/jobs/${effectiveId}`);
+      if (!resp.ok && effectiveId !== jobId) {
+        resp = await fetch(`/api/jobs/${jobId}`);
+      }
       if (resp.ok) job = await resp.json();
     } catch (e) {
       console.warn('Could not fetch job metadata:', e);
     }
 
+    const cacheBuster = Date.now();
+
     // Set download WAV link
-    const reconUrl = `/api/jobs/${jobId}/files/reconstruction.wav`;
-    const corrUrl = `/api/jobs/${jobId}/files/corrupted.wav`;
-    const cleanUrl = `/api/jobs/${jobId}/files/clean.wav`;
+    const reconUrl = `/api/jobs/${effectiveId}/files/reconstruction.wav`;
+    const corrUrl = `/api/jobs/${effectiveId}/files/corrupted.wav`;
+    const cleanUrl = `/api/jobs/${effectiveId}/files/clean.wav`;
 
     activeResultUrls = {
       reconstruction: reconUrl,
@@ -890,7 +941,7 @@
       clean: cleanUrl
     };
 
-    btnDownloadWav.href = reconUrl;
+    btnDownloadWav.href = `${reconUrl}?download=true`;
 
     // Default to playing reconstructed audio
     switchAbAudio('reconstruction');
@@ -903,30 +954,37 @@
         metricRuntime.textContent = '--';
       }
       metricEpochs.textContent = job.progress?.epochs || '--';
+      const nParams = job.n_params || (job.metrics && job.metrics.n_params) || (eventData && eventData.n_params);
+      if (nParams) {
+        metricParams.textContent = Number(nParams).toLocaleString();
+      } else {
+        metricParams.textContent = '--';
+      }
       if (job.metrics) {
-        if (job.metrics.n_params) metricParams.textContent = Number(job.metrics.n_params).toLocaleString();
-        if (job.metrics.nmse_tot_db !== undefined) {
+        if (job.metrics.nmse_tot_db !== undefined && job.metrics.nmse_tot_db !== null) {
           metricNmseTot.textContent = `${job.metrics.nmse_tot_db.toFixed(2)} dB`;
           metricCardNmse.classList.remove('hidden');
         } else {
           metricCardNmse.classList.add('hidden');
         }
-        if (job.metrics.nmse_miss_db !== undefined) {
+        if (job.metrics.nmse_miss_db !== undefined && job.metrics.nmse_miss_db !== null) {
           metricNmseMiss.textContent = `${job.metrics.nmse_miss_db.toFixed(2)} dB`;
           metricCardMiss.classList.remove('hidden');
         } else {
           metricCardMiss.classList.add('hidden');
         }
       }
+    } else if (eventData && eventData.metrics) {
+      if (eventData.n_params) metricParams.textContent = Number(eventData.n_params).toLocaleString();
     }
 
-    // Spectrogram Images
-    imgSpecCorrupted.src = `/api/jobs/${jobId}/files/spec_corrupted.png`;
-    imgSpecReconstructed.src = `/api/jobs/${jobId}/files/spec_reconstructed.png`;
-    imgLossCurve.src = `/api/jobs/${jobId}/files/loss_curve.png`;
+    // Spectrogram Images with cache buster
+    imgSpecCorrupted.src = `/api/jobs/${effectiveId}/files/spec_corrupted.png?t=${cacheBuster}`;
+    imgSpecReconstructed.src = `/api/jobs/${effectiveId}/files/spec_reconstructed.png?t=${cacheBuster}`;
+    imgLossCurve.src = `/api/jobs/${effectiveId}/files/loss_curve.png?t=${cacheBuster}`;
 
     if (job && job.files && job.files.includes('spec_clean.png')) {
-      imgSpecClean.src = `/api/jobs/${jobId}/files/spec_clean.png`;
+      imgSpecClean.src = `/api/jobs/${effectiveId}/files/spec_clean.png?t=${cacheBuster}`;
       colSpecClean.classList.remove('hidden');
       btnAbClean.classList.remove('hidden');
     } else {

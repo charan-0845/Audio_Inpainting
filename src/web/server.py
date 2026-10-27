@@ -79,6 +79,38 @@ PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 
+def get_presets_for_device(device: str = "cpu") -> Dict[str, Dict[str, Any]]:
+    """Return device-adapted presets to prevent memory exhaustion and timeout on CPU."""
+    if device == "cpu":
+        return {
+            "fast": {
+                "optimization": {"epochs": 100},
+                "model": {
+                    "base_filters": 4,
+                    "channel_schedule": [4, 4, 4, 4, 4],
+                    "use_harmonic": False,
+                },
+            },
+            "balanced": {
+                "optimization": {"epochs": 300},
+                "model": {
+                    "base_filters": 16,
+                    "channel_schedule": [16, 16, 16, 16, 16],
+                    "use_harmonic": False,
+                },
+            },
+            "paper": {
+                "optimization": {"epochs": 1000},
+                "model": {
+                    "base_filters": 32,
+                    "channel_schedule": [32, 32, 32, 32, 32],
+                    "use_harmonic": True,
+                },
+            },
+        }
+    return PRESETS
+
+
 class JobCancelledException(Exception):
     """Raised when inpainting is cancelled by the user."""
     pass
@@ -163,7 +195,10 @@ def _render_preview(
 ) -> str:
     """Render in-progress spectrogram to base64 PNG data URL."""
     try:
-        out_ch = crop_to_shape(output_padded.detach().cpu(), original_shape)
+        t = output_padded.detach().cpu()
+        if t.ndim == 4:
+            t = t.squeeze(0)
+        out_ch = crop_to_shape(t, original_shape)
         stft_out = channels_to_stft(out_ch)
         fig = plot_spectrogram(
             stft_out,
@@ -251,10 +286,19 @@ class Job:
     def to_dict(self) -> Dict[str, Any]:
         """Convert job info to JSON-serializable dictionary."""
         produced_files: List[str] = []
+        n_params = None
         if self.run_dir and self.run_dir.is_dir():
             produced_files = [
                 p.name for p in sorted(self.run_dir.iterdir()) if p.name in WHITELIST_FILES
             ]
+            meta_file = self.run_dir / "meta.json"
+            if meta_file.is_file():
+                try:
+                    meta_data = json.loads(meta_file.read_text(encoding="utf-8"))
+                    n_params = meta_data.get("n_params")
+                except Exception:
+                    pass
+
         return {
             "id": self.id,
             "status": self.status.value,
@@ -268,6 +312,7 @@ class Job:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "metrics": self.metrics,
+            "n_params": n_params,
             "files": produced_files,
         }
 
@@ -290,7 +335,12 @@ class JobManager:
 
     def get(self, job_id: str) -> Optional[Job]:
         """Look up job by job_id or run_dir name."""
-        return self.registry.get(job_id)
+        if job_id in self.registry:
+            return self.registry[job_id]
+        for job in self.registry.values():
+            if job.run_dir and job.run_dir.name == job_id:
+                return job
+        return None
 
     def queue_length(self) -> int:
         """Return number of pending jobs in queue."""
@@ -362,8 +412,9 @@ class JobManager:
                         "eta_s": eta_s,
                     }
 
+                    preview_interval = max(1, min(50, ep_total // 10))
                     preview_b64: Optional[str] = None
-                    if epoch == 0 or (epoch + 1) % 50 == 0 or (epoch + 1) == ep_total:
+                    if epoch == 0 or (epoch + 1) % preview_interval == 0 or (epoch + 1) == ep_total:
                         preview_b64 = _render_preview(
                             output, original_shape, stft_params, sr, epoch + 1, ep_total
                         )
@@ -410,6 +461,15 @@ class JobManager:
                     except Exception:
                         pass
 
+                n_params = getattr(result, "n_params", None)
+                meta_file = run_dir / "meta.json"
+                if meta_file.is_file():
+                    try:
+                        meta_data = json.loads(meta_file.read_text(encoding="utf-8"))
+                        n_params = meta_data.get("n_params", n_params)
+                    except Exception:
+                        pass
+
                 job.status = JobStatus.COMPLETED
                 job.completed_at = time.time()
                 job.publish_event({
@@ -417,6 +477,7 @@ class JobManager:
                     "status": "completed",
                     "run_id": run_dir.name,
                     "metrics": job.metrics,
+                    "n_params": n_params,
                     "files": [
                         p.name for p in sorted(run_dir.iterdir()) if p.name in WHITELIST_FILES
                     ],
@@ -505,28 +566,31 @@ def create_app(
     @app.get("/api/presets")
     async def get_presets() -> Dict[str, Any]:
         """Return available configuration presets."""
+        presets = get_presets_for_device(app.state.device)
+        is_cpu = app.state.device == "cpu"
         return {
             "presets": {
                 "fast": {
-                    "epochs": 300,
-                    "base_filters": 4,
-                    "harmonic": False,
-                    "description": "Fast preview (300 epochs, base_filters 4, harmonic off)",
+                    "epochs": presets["fast"]["optimization"]["epochs"],
+                    "base_filters": presets["fast"]["model"].get("base_filters", 4),
+                    "harmonic": presets["fast"]["model"].get("use_harmonic", False),
+                    "description": "Fast preview (100 epochs, 4 filters, ~30-60s on CPU)" if is_cpu else "Fast preview (300 epochs, base_filters 4, harmonic off)",
                 },
                 "balanced": {
-                    "epochs": 1500,
-                    "base_filters": 68,
-                    "harmonic": True,
-                    "description": "Balanced quality & speed (1500 epochs, full MultiResUNet)",
+                    "epochs": presets["balanced"]["optimization"]["epochs"],
+                    "base_filters": presets["balanced"]["model"].get("base_filters", 16 if is_cpu else 68),
+                    "harmonic": presets["balanced"]["model"].get("use_harmonic", False if is_cpu else True),
+                    "description": "Balanced quality & speed (300 epochs, 16 filters)" if is_cpu else "Balanced quality & speed (1500 epochs, full MultiResUNet)",
                 },
                 "paper": {
-                    "epochs": 5000,
-                    "base_filters": 68,
-                    "harmonic": True,
-                    "description": "Paper reproduction (5000 epochs, full MultiResUNet)",
+                    "epochs": presets["paper"]["optimization"]["epochs"],
+                    "base_filters": presets["paper"]["model"].get("base_filters", 32 if is_cpu else 68),
+                    "harmonic": presets["paper"]["model"].get("use_harmonic", True),
+                    "description": "High quality MultiResUNet (1000 epochs, harmonic on)" if is_cpu else "Paper reproduction (5000 epochs, full MultiResUNet)",
                 },
             },
-            "default": "balanced",
+            "default": "fast" if is_cpu else "balanced",
+            "device": app.state.device,
         }
 
     @app.post("/api/jobs", status_code=status.HTTP_201_CREATED)
@@ -676,7 +740,10 @@ def create_app(
 
         # 4. Resolve configuration
         cfg = dict(app.state.base_cfg)
-        if preset in PRESETS:
+        device_presets = get_presets_for_device(app.state.device)
+        if preset in device_presets:
+            cfg = _deep_merge(cfg, device_presets[preset])
+        elif preset in PRESETS:
             cfg = _deep_merge(cfg, PRESETS[preset])
         if epochs is not None and epochs > 0:
             cfg["optimization"]["epochs"] = int(epochs)
@@ -713,12 +780,52 @@ def create_app(
     async def get_job(job_id: str) -> Dict[str, Any]:
         """Get job status and results."""
         job = job_manager.get(job_id)
-        if not job:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Job '{job_id}' not found.",
-            )
-        return job.to_dict()
+        if job:
+            return job.to_dict()
+
+        # Disk fallback if job was completed earlier or server restarted
+        potential_dir = Path(app.state.out_dir) / job_id
+        if potential_dir.is_dir():
+            meta_file = potential_dir / "meta.json"
+            metrics_file = potential_dir / "metrics.json"
+            meta = {}
+            metrics = {}
+            if meta_file.is_file():
+                try:
+                    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            if metrics_file.is_file():
+                try:
+                    metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            produced_files = [
+                p.name for p in sorted(potential_dir.iterdir()) if p.name in WHITELIST_FILES
+            ]
+
+            return {
+                "id": potential_dir.name,
+                "status": "completed",
+                "clip_id": meta.get("clip_id", ""),
+                "gap_ms": meta.get("gap_ms", 0),
+                "seed": meta.get("seed", 0),
+                "progress": {"epoch": meta.get("epochs", 0), "epochs": meta.get("epochs", 0)},
+                "warnings": [],
+                "error": None,
+                "created_at": None,
+                "started_at": 0,
+                "completed_at": meta.get("runtime_s", 0),
+                "metrics": metrics,
+                "n_params": meta.get("n_params"),
+                "files": produced_files,
+            }
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job '{job_id}' not found.",
+        )
 
     @app.post("/api/jobs/{job_id}/cancel")
     async def cancel_job(job_id: str) -> Dict[str, Any]:
@@ -803,7 +910,11 @@ def create_app(
         )
 
     @app.get("/api/jobs/{job_id}/files/{filename:path}")
-    async def get_job_file(job_id: str, filename: str) -> FileResponse:
+    async def get_job_file(
+        job_id: str,
+        filename: str,
+        download: bool = False,
+    ) -> FileResponse:
         """Serve whitelisted artifact files from the run directory."""
         # Whitelist verification
         if filename not in WHITELIST_FILES:
@@ -812,21 +923,25 @@ def create_app(
                 detail=f"File '{filename}' is not in the whitelist of permitted downloads.",
             )
 
+        run_dir: Optional[Path] = None
         job = job_manager.get(job_id)
-        if not job:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Job '{job_id}' not found.",
-            )
-        if not job.run_dir or not job.run_dir.is_dir():
+        if job and job.run_dir and job.run_dir.is_dir():
+            run_dir = job.run_dir
+        else:
+            # Fallback to checking disk in case job_id matches a run directory name directly
+            potential_dir = Path(app.state.out_dir) / job_id
+            if potential_dir.is_dir():
+                run_dir = potential_dir
+
+        if not run_dir or not run_dir.is_dir():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Run directory for job '{job_id}' is not yet available.",
             )
 
         # Path traversal guard
-        target_path = (job.run_dir / filename).resolve()
-        run_dir_resolved = job.run_dir.resolve()
+        target_path = (run_dir / filename).resolve()
+        run_dir_resolved = run_dir.resolve()
         if not target_path.is_relative_to(run_dir_resolved):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -849,7 +964,13 @@ def create_app(
         elif filename.endswith(".yaml"):
             media_type = "text/yaml"
 
-        return FileResponse(target_path, media_type=media_type, filename=filename)
+        disp_type = "attachment" if download else "inline"
+        return FileResponse(
+            target_path,
+            media_type=media_type,
+            filename=filename,
+            content_disposition_type=disp_type,
+        )
 
     # -----------------------------------------------------------------------
     # Static files mount

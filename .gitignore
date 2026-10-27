@@ -24,6 +24,8 @@ data/masks/*
 outputs/audio/*
 outputs/spectrograms/*
 outputs/checkpoints/*
+outputs/runs/*
+!outputs/runs/synthetic_200ms_s0_20261008-101357/
 
 # Experiment artifacts
 experiments/**/runs/

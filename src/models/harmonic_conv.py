@@ -129,21 +129,18 @@ class HarmonicConv2d(nn.Module):
         gather_idx, valid_mask = self._get_gather_indices(M, x.device)  # (Km, M_out)
         M_out = gather_idx.shape[1]
 
-        # Vectorized gather over frequency axis
-        flat_idx = gather_idx.reshape(-1)  # (Km * M_out)
-        lowered = x_padded[:, :, flat_idx, :]  # (B, C, Km * M_out, L_padded)
-        lowered = lowered.view(B, C, self.Km, M_out, -1)
-        
-        if valid_mask is not None:
-            # valid_mask is (Km, M_out). Expand to (B, C, Km, M_out, L_padded)
-            # Unsqueeze to align with lowered: (1, 1, Km, M_out, 1)
-            mask_expanded = valid_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
-            lowered = lowered * mask_expanded
+        if self.out_of_bounds_strategy == "zeros" and valid_mask is not None:
+            # Zero-padded bin at index M absorbs out-of-bounds indices without elementwise tensor multiply
+            idx_zero = torch.where(valid_mask, gather_idx, torch.full_like(gather_idx, M))
+            flat_idx = idx_zero.reshape(-1)
+            x_fpad = F.pad(x_padded, (0, 0, 0, 1))
+            lowered = x_fpad[:, :, flat_idx, :].view(B, C * self.Km, M_out, -1)
+        else:
+            flat_idx = gather_idx.reshape(-1)
+            lowered = x_padded[:, :, flat_idx, :].view(B, C * self.Km, M_out, -1)
 
-        lowered_4d = lowered.permute(0, 1, 2, 3, 4).reshape(B, C * self.Km, M_out, -1)
         weight_4d = self.weight.reshape(self.out_channels, C * self.Km, 1, self.Kl)
-
-        out = F.conv2d(lowered_4d, weight_4d, stride=(1, self.stride[1]))
+        out = F.conv2d(lowered, weight_4d, stride=(1, self.stride[1]))
 
         if self.bias is not None:
             out = out + self.bias.view(1, -1, 1, 1)

@@ -136,28 +136,28 @@
             <div class="form-group">
               <label class="form-label" for="preset-select">Optimization Preset</label>
               <div class="preset-cards">
-                <label class="preset-card">
-                  <input type="radio" name="preset" value="fast" id="preset-fast">
+                <label class="preset-card selected">
+                  <input type="radio" name="preset" value="fast" id="preset-fast" checked>
                   <div class="preset-content">
                     <span class="preset-title">Fast Preview</span>
-                    <span class="preset-desc">300 epochs • 4 filters • No harmonic</span>
-                    <span class="preset-speed">~5-15s CPU</span>
+                    <span class="preset-desc">100 epochs • 4 filters • Fast</span>
+                    <span class="preset-speed">Recommended (~30-60s)</span>
                   </div>
                 </label>
-                <label class="preset-card selected">
-                  <input type="radio" name="preset" value="balanced" id="preset-balanced" checked>
+                <label class="preset-card">
+                  <input type="radio" name="preset" value="balanced" id="preset-balanced">
                   <div class="preset-content">
                     <span class="preset-title">Balanced</span>
-                    <span class="preset-desc">1,500 epochs • Full MultiResUNet</span>
-                    <span class="preset-speed">Recommended</span>
+                    <span class="preset-desc">300 epochs • 16 filters</span>
+                    <span class="preset-speed">Good quality</span>
                   </div>
                 </label>
                 <label class="preset-card">
                   <input type="radio" name="preset" value="paper" id="preset-paper">
                   <div class="preset-content">
                     <span class="preset-title">Paper Standard</span>
-                    <span class="preset-desc">5,000 epochs • Full paper params</span>
-                    <span class="preset-speed">Best quality</span>
+                    <span class="preset-desc">Full MultiResUNet • Harmonic</span>
+                    <span class="preset-speed">GPU Recommended</span>
                   </div>
                 </label>
               </div>
