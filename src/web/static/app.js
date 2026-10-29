@@ -1,5 +1,6 @@
 /**
- * DPAI Web Demo Application Logic (Vanilla JavaScript)
+ * DPAI Web Demo Application Logic (Option 2: Timeline Canvas + Docked Inspector)
+ * Adheres strictly to design-system/dpai/MASTER.md instrument specifications.
  */
 
 (function () {
@@ -20,6 +21,9 @@
   let dragCurrentX = 0;
   let isPlayingPreview = false;
   let previewSourceNode = null;
+  let previewStartContextTime = 0;  // audioContext.currentTime when playback began
+  let rafPlayhead = null;           // requestAnimationFrame handle for playhead
+  let hoverCanvasX = -1;            // canvas-space X of mouse hover (-1 = not hovering)
   let lossHistory = [];
 
   // --- DOM Elements ---
@@ -43,6 +47,7 @@
   const clipDurDisplay = document.getElementById('clip-dur-display');
   const btnPlayPreview = document.getElementById('btn-play-preview');
   const playBtnText = document.getElementById('play-btn-text');
+  const spectrogramStateTag = document.getElementById('spectrogram-state-tag');
 
   const btnRandomGaps = document.getElementById('btn-random-gaps');
   const btnDetectGaps = document.getElementById('btn-detect-gaps');
@@ -108,8 +113,24 @@
     setupPresetSelection();
     setupJobExecution();
     setupAbPlayer();
+    setupKeyboardShortcuts();
     checkServerHealth();
     restorePreviousRun();
+    setupCanvasResolution();
+  }
+
+  function setupCanvasResolution() {
+    function adjust() {
+      if (!waveformCanvas) return;
+      const rect = waveformCanvas.getBoundingClientRect();
+      if (rect.width > 0) {
+        waveformCanvas.width = Math.round(rect.width * window.devicePixelRatio || 1);
+        waveformCanvas.height = Math.round(136 * window.devicePixelRatio || 1);
+        renderWaveform();
+      }
+    }
+    window.addEventListener('resize', adjust);
+    adjust();
   }
 
   function restorePreviousRun() {
@@ -140,35 +161,65 @@
     });
   }
 
+  // --- Keyboard Shortcuts (Option 2) ---
+  function setupKeyboardShortcuts() {
+    window.addEventListener('keydown', (e) => {
+      const tag = document.activeElement ? document.activeElement.tagName : '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        // If results section is visible and audio is set, toggle audio playback
+        if (!resultsSection.classList.contains('hidden') && audioPlayback.src) {
+          if (audioPlayback.paused) audioPlayback.play().catch(() => {});
+          else audioPlayback.pause();
+        } else {
+          togglePreviewPlayback();
+        }
+      } else if (e.key === '1') {
+        if (!resultsSection.classList.contains('hidden') && activeResultUrls.reconstruction) {
+          switchAbAudio('reconstruction');
+        }
+      } else if (e.key === '2') {
+        if (!resultsSection.classList.contains('hidden') && activeResultUrls.corrupted) {
+          switchAbAudio('corrupted');
+        }
+      } else if (e.key === '3') {
+        if (!resultsSection.classList.contains('hidden') && activeResultUrls.clean && !colSpecClean.classList.contains('hidden')) {
+          switchAbAudio('clean');
+        }
+      }
+    });
+  }
+
   // --- Server Health ---
   async function checkServerHealth() {
     try {
       const resp = await fetch('/api/health');
       if (resp.ok) {
         const data = await resp.json();
-        serverBadge.className = 'badge badge-idle';
         if (data.demo_only) {
-          serverStatusText.textContent = `Demo Mode (${data.device.toUpperCase()})`;
+          serverStatusText.textContent = `DEMO MODE (${data.device.toUpperCase()})`;
           btnRun.title = 'Job submission is disabled in demo mode.';
         } else {
-          serverStatusText.textContent = `Online • ${data.device.toUpperCase()}`;
+          serverStatusText.textContent = `ONLINE // ${data.device.toUpperCase()}`;
         }
         if (data.device === 'cpu') {
           const fastRadio = document.getElementById('preset-fast');
           if (fastRadio && (!document.querySelector('input[name="preset"]:checked') || document.querySelector('input[name="preset"]:checked').value === 'balanced')) {
             fastRadio.checked = true;
-            document.querySelectorAll('.preset-card').forEach((card) => card.classList.remove('selected'));
-            fastRadio.closest('.preset-card').classList.add('selected');
+            document.querySelectorAll('.preset-choice').forEach((card) => card.classList.remove('selected'));
+            fastRadio.closest('.preset-choice')?.classList.add('selected');
           }
         }
       } else {
         throw new Error('Health check failed');
       }
     } catch (e) {
-      serverBadge.className = 'badge';
-      serverBadge.style.background = 'rgba(244, 63, 94, 0.15)';
-      serverBadge.style.color = '#f43f5e';
-      serverStatusText.textContent = 'Server Offline';
+      serverStatusText.textContent = 'SERVER OFFLINE';
+      serverStatusText.style.color = '#E5484D';
+      const dot = serverBadge.querySelector('.device-dot');
+      if (dot) dot.style.backgroundColor = '#E5484D';
     }
   }
 
@@ -218,10 +269,12 @@
     referenceInput.addEventListener('change', (e) => {
       if (e.target.files.length > 0) {
         uploadedReferenceFile = e.target.files[0];
-        refStatus.textContent = `Attached: ${uploadedReferenceFile.name}`;
+        refStatus.textContent = uploadedReferenceFile.name;
+        refStatus.style.color = 'var(--recon)';
       } else {
         uploadedReferenceFile = null;
-        refStatus.textContent = 'None';
+        refStatus.textContent = 'NONE';
+        refStatus.style.color = 'var(--fg-muted)';
       }
     });
 
@@ -231,7 +284,7 @@
 
   async function handleAudioFile(file) {
     uploadedAudioFile = file;
-    clipNameDisplay.textContent = file.name;
+    clipNameDisplay.textContent = file.name.toUpperCase();
 
     try {
       const arrayBuffer = await file.arrayBuffer();
@@ -255,7 +308,6 @@
       data[i] = 0.5 * Math.sin(2 * Math.PI * freq * t) + 0.1 * (Math.random() * 2 - 1);
     }
 
-    // Peak normalise to 0.9
     let maxVal = 0;
     for (let i = 0; i < numSamples; i++) {
       if (Math.abs(data[i]) > maxVal) maxVal = Math.abs(data[i]);
@@ -264,8 +316,8 @@
       for (let i = 0; i < numSamples; i++) data[i] = (data[i] * 0.9) / maxVal;
     }
 
-    uploadedAudioFile = null; // will use mode=synthetic or client wav
-    setAudioBuffer(buffer, `Synthetic ${freq} Hz Sine`);
+    uploadedAudioFile = null;
+    setAudioBuffer(buffer, `SYNTHETIC ${freq} HZ SINE`);
   }
 
   function generatePianoTone(freq = 261.63, durationS = 2.5) {
@@ -278,7 +330,6 @@
     for (let i = 0; i < numSamples; i++) {
       const t = i / sr;
       const decay = Math.exp(-2.5 * t);
-      // Fundamental + 3 harmonics
       const val =
         (0.6 * Math.sin(2 * Math.PI * freq * t) +
           0.3 * Math.sin(2 * Math.PI * 2 * freq * t) +
@@ -297,7 +348,7 @@
     }
 
     uploadedAudioFile = null;
-    setAudioBuffer(buffer, 'Piano Note (C4)');
+    setAudioBuffer(buffer, 'PIANO NOTE (C4)');
   }
 
   function setAudioBuffer(buffer, displayName) {
@@ -305,26 +356,38 @@
     audioDurationS = buffer.duration;
     audioSampleRate = buffer.sampleRate;
 
-    clipNameDisplay.textContent = displayName;
-    clipDurDisplay.textContent = `${audioDurationS.toFixed(2)}s (${buffer.sampleRate} Hz)`;
-    waveformContainer.classList.remove('hidden');
+    clipNameDisplay.textContent = displayName.toUpperCase();
+    clipDurDisplay.textContent = `${(audioSampleRate / 1000).toFixed(0)} kHz • ${audioDurationS.toFixed(2)} s`;
 
-    // Default: seed with an initial gap if none exist
     if (gaps.length === 0) {
       const centerMs = (audioDurationS * 1000) / 2;
       const gapLen = Math.min(80, audioDurationS * 200);
       gaps = [[Math.round(centerMs - gapLen / 2), Math.round(centerMs + gapLen / 2)]];
     }
 
+    if (spectrogramStateTag) {
+      spectrogramStateTag.textContent = 'CORRUPTED INPUT READY';
+    }
+    if (specPlaceholderText) {
+      specPlaceholderText.textContent = 'AUDIO LOADED // READY FOR OPTIMIZATION';
+    }
+
     renderWaveform();
     updateGapStats();
   }
 
-  // --- Waveform Rendering & Interaction ---
+  // --- Waveform Rendering & Interaction (Lab Instrument Palette) ---
   function setupWaveformInteraction() {
     waveformCanvas.addEventListener('mousedown', onCanvasMouseDown);
     waveformCanvas.addEventListener('mousemove', onCanvasMouseMove);
     window.addEventListener('mouseup', onCanvasMouseUp);
+
+    // Hover cursor: track mouse position in canvas-pixel space
+    waveformCanvas.addEventListener('mousemove', onCanvasHover);
+    waveformCanvas.addEventListener('mouseleave', () => {
+      hoverCanvasX = -1;
+      renderWaveform();
+    });
 
     btnPlayPreview.addEventListener('click', togglePreviewPlayback);
     btnRandomGaps.addEventListener('click', addRandomGaps);
@@ -344,78 +407,181 @@
     const width = canvas.width;
     const height = canvas.height;
     const data = rawAudioBuffer.getChannelData(0);
-    const step = Math.ceil(data.length / width);
+    const N = data.length;
+    // Use exact float ratio so gap overlay (which uses sample/N * width) aligns
+    // perfectly. Math.ceil would compress the waveform leftward vs the markers.
+    const samplesPerPx = N / width;
     const amp = height / 2;
 
     ctx.clearRect(0, 0, width, height);
 
-    // Background & center grid line
-    ctx.fillStyle = '#060911';
+    // Canvas background: surface #16181B
+    ctx.fillStyle = '#16181B';
     ctx.fillRect(0, 0, width, height);
 
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    // Center baseline: rgba(255, 255, 255, 0.07)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.07)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, amp);
     ctx.lineTo(width, amp);
     ctx.stroke();
 
-    // Time markings
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-    ctx.font = '9px JetBrains Mono, monospace';
+    // Time markings with IBM Plex Mono
+    ctx.fillStyle = 'rgba(232, 230, 225, 0.35)';
+    ctx.font = '10px "IBM Plex Mono", monospace';
     const totalSecs = audioDurationS;
-    const numMarkers = 5;
+    const numMarkers = 6;
     for (let i = 0; i <= numMarkers; i++) {
       const frac = i / numMarkers;
       const x = frac * width;
-      const timeVal = (frac * totalSecs).toFixed(1);
-      ctx.fillText(`${timeVal}s`, Math.min(x + 2, width - 24), height - 4);
+      const timeVal = (frac * totalSecs).toFixed(2);
+      ctx.fillText(`${timeVal}s`, Math.min(x + 4, width - 36), height - 6);
       ctx.beginPath();
-      ctx.moveTo(x, height - 12);
+      ctx.moveTo(x, height - 16);
       ctx.lineTo(x, height);
       ctx.stroke();
     }
 
-    // Draw waveform bars
-    ctx.fillStyle = '#6366f1';
+    // Draw waveform bars using proportional mapping — pixel i covers samples
+    // [floor(i * samplesPerPx), floor((i+1) * samplesPerPx)].
+    // This keeps the waveform and gap overlay in the same coordinate space.
+    ctx.fillStyle = 'rgba(232, 230, 225, 0.82)';
     for (let i = 0; i < width; i++) {
+      const sStart = Math.floor(i * samplesPerPx);
+      const sEnd = Math.floor((i + 1) * samplesPerPx);
       let min = 1.0;
       let max = -1.0;
-      for (let j = 0; j < step; j++) {
-        const datum = data[i * step + j] || 0;
+      for (let s = sStart; s < sEnd; s++) {
+        const datum = data[s] || 0;
         if (datum < min) min = datum;
         if (datum > max) max = datum;
+      }
+      // Guarantee at least one sample contributes (boundary pixels)
+      if (sStart === sEnd) {
+        const datum = data[sStart] || 0;
+        min = datum;
+        max = datum;
       }
       const y1 = Math.max(0, (1 + min) * amp);
       const y2 = Math.min(height, (1 + max) * amp);
       ctx.fillRect(i, y1, 1, Math.max(1, y2 - y1));
     }
 
-    // Draw Gaps Overlay (Red translucent columns)
+    // Draw Gaps Overlay:
+    // Missing / gap: #3DD6C6 (--missing) at 25% fill with 1px solid edges and drag handles
     const durMs = audioDurationS * 1000;
     gaps.forEach(([startMs, endMs]) => {
       const x1 = (startMs / durMs) * width;
       const x2 = (endMs / durMs) * width;
       const w = Math.max(2, x2 - x1);
 
-      ctx.fillStyle = 'rgba(244, 63, 94, 0.35)';
+      // Translucent fill (25%)
+      ctx.fillStyle = 'rgba(61, 214, 198, 0.25)';
       ctx.fillRect(x1, 0, w, height);
 
-      ctx.strokeStyle = '#f43f5e';
-      ctx.lineWidth = 1.5;
+      // Solid 1px edge
+      ctx.strokeStyle = '#3DD6C6';
+      ctx.lineWidth = 1;
       ctx.strokeRect(x1, 0, w, height);
+
+      // Left & right drag handles
+      ctx.fillStyle = '#3DD6C6';
+      ctx.fillRect(x1 - 1, 0, 3, height);
+      ctx.fillRect(x2 - 2, 0, 3, height);
+
+      // Gap duration tag
+      ctx.fillStyle = '#3DD6C6';
+      ctx.font = '9px "IBM Plex Mono", monospace';
+      const gapText = `${Math.round(endMs - startMs)}ms`;
+      if (w > 30) {
+        ctx.fillText(gapText, x1 + 4, 14);
+      }
     });
 
     // Draw in-progress drag selection
     if (isDragging) {
       const startX = Math.min(dragStartX, dragCurrentX);
       const dragW = Math.abs(dragCurrentX - dragStartX);
-      ctx.fillStyle = 'rgba(244, 63, 94, 0.5)';
+      ctx.fillStyle = 'rgba(61, 214, 198, 0.40)';
       ctx.fillRect(startX, 0, dragW, height);
-      ctx.strokeStyle = '#fff';
+      ctx.strokeStyle = '#3DD6C6';
       ctx.setLineDash([3, 3]);
       ctx.strokeRect(startX, 0, dragW, height);
       ctx.setLineDash([]);
+    }
+
+    // --- Hover cursor: thin teal line + time tooltip ---
+    if (hoverCanvasX >= 0 && !isDragging) {
+      const hx = hoverCanvasX;
+      const hoverMs = canvasPxToMs(hx);
+      const hoverS = (hoverMs / 1000).toFixed(3);
+
+      // Dashed vertical line in --missing
+      ctx.strokeStyle = 'rgba(61, 214, 198, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(hx, 0);
+      ctx.lineTo(hx, height);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Timestamp tooltip pill (follows cursor, flips at right edge)
+      const label = `${hoverS}s`;
+      ctx.font = '10px "IBM Plex Mono", monospace';
+      const textW = ctx.measureText(label).width;
+      const pillW = textW + 10;
+      const pillH = 16;
+      const pillX = (hx + 8 + pillW > width) ? hx - pillW - 6 : hx + 6;
+      const pillY = 8;
+      ctx.fillStyle = 'rgba(14, 15, 17, 0.88)';
+      ctx.beginPath();
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(pillX, pillY, pillW, pillH, 2);
+      } else {
+        ctx.rect(pillX, pillY, pillW, pillH);
+      }
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(61, 214, 198, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#3DD6C6';
+      ctx.fillText(label, pillX + 5, pillY + 11);
+    }
+
+    // --- Playhead: solid amber line tracking live preview position ---
+    if (isPlayingPreview && audioContext) {
+      const elapsed = audioContext.currentTime - previewStartContextTime;
+      const clampedElapsed = Math.min(elapsed, audioDurationS);
+      const phX = (clampedElapsed / audioDurationS) * width;
+
+      // Amber solid line (--recon)
+      ctx.strokeStyle = '#FFB020';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(phX, 0);
+      ctx.lineTo(phX, height);
+      ctx.stroke();
+
+      // Small triangle head at top
+      ctx.fillStyle = '#FFB020';
+      ctx.beginPath();
+      ctx.moveTo(phX - 5, 0);
+      ctx.lineTo(phX + 5, 0);
+      ctx.lineTo(phX, 7);
+      ctx.closePath();
+      ctx.fill();
+
+      // Elapsed time readout
+      const phLabel = `${clampedElapsed.toFixed(2)}s`;
+      ctx.font = '9px "IBM Plex Mono", monospace';
+      const phTW = ctx.measureText(phLabel).width;
+      const phPillX = (phX + 6 + phTW + 10 > width) ? phX - phTW - 14 : phX + 4;
+      ctx.fillStyle = 'rgba(14, 15, 17, 0.85)';
+      ctx.fillRect(phPillX, height - 20, phTW + 8, 14);
+      ctx.fillStyle = '#FFB020';
+      ctx.fillText(phLabel, phPillX + 4, height - 9);
     }
   }
 
@@ -429,11 +595,28 @@
   }
 
   function onCanvasMouseMove(e) {
-    if (!isDragging) return;
     const rect = waveformCanvas.getBoundingClientRect();
     const scaleX = waveformCanvas.width / rect.width;
-    dragCurrentX = Math.max(0, Math.min(waveformCanvas.width, (e.clientX - rect.left) * scaleX));
+    const cx = Math.max(0, Math.min(waveformCanvas.width, (e.clientX - rect.left) * scaleX));
+    if (isDragging) {
+      dragCurrentX = cx;
+    }
+    hoverCanvasX = cx;
     renderWaveform();
+  }
+
+  /** Convert canvas-pixel X → display milliseconds. */
+  function canvasPxToMs(px) {
+    return (px / waveformCanvas.width) * audioDurationS * 1000;
+  }
+
+  /** Called only for hover; separate from drag handler. */
+  function onCanvasHover(e) {
+    if (!rawAudioBuffer) return;
+    const rect = waveformCanvas.getBoundingClientRect();
+    const scaleX = waveformCanvas.width / rect.width;
+    hoverCanvasX = Math.max(0, Math.min(waveformCanvas.width, (e.clientX - rect.left) * scaleX));
+    if (!isDragging) renderWaveform();
   }
 
   function onCanvasMouseUp() {
@@ -445,12 +628,11 @@
     const durMs = audioDurationS * 1000;
     const width = waveformCanvas.width;
 
-    if (maxX - minX > 3) {
+    if (maxX - minX > 4) {
       const startMs = Math.round((minX / width) * durMs);
       const endMs = Math.round((maxX / width) * durMs);
       if (endMs > startMs) {
         gaps.push([startMs, endMs]);
-        // Sort gaps by start time
         gaps.sort((a, b) => a[0] - b[0]);
       }
     }
@@ -466,7 +648,6 @@
     let totalMissingMs = 0;
     let hasGapOver100 = false;
 
-    // Merge overlapping intervals to compute total unique missing time
     const merged = [];
     gaps.forEach(([s, e]) => {
       if (e - s > 100) hasGapOver100 = true;
@@ -491,7 +672,7 @@
       const chip = document.createElement('div');
       chip.className = 'gap-chip';
       chip.innerHTML = `
-        <span>${startMs}ms - ${endMs}ms (${endMs - startMs}ms)</span>
+        <span>${startMs} - ${endMs} ms (${endMs - startMs}ms)</span>
         <button type="button" class="btn-del-gap" data-idx="${idx}" title="Remove gap">×</button>
       `;
       chip.querySelector('.btn-del-gap').addEventListener('click', (e) => {
@@ -508,27 +689,20 @@
     let isBlocker = false;
 
     if (gaps.length === 0) {
-      warningMsg = 'Please mark at least one corrupted gap to inpaint.';
+      warningMsg = 'Mark at least one corrupted gap to inpaint.';
       isBlocker = true;
     } else if (missingPct >= 40.0) {
-      warningMsg = `Total missing audio (${missingPct.toFixed(1)}%) exceeds the 40% maximum limit. Reduce gap sizes.`;
+      warningMsg = `Total missing audio (${missingPct.toFixed(1)}%) exceeds maximum 40% budget.`;
       isBlocker = true;
     } else if (hasGapOver100) {
-      warningMsg =
-        'Notice: One or more gaps exceed 100 ms. The Deep Prior model is optimized for gaps ≤ 100 ms; longer gaps may show degraded fidelity.';
+      warningMsg = 'Notice: One or more gaps exceed 100 ms. Paper method is calibrated for ≤ 100 ms.';
       isBlocker = false;
     }
 
     if (warningMsg) {
       validationBox.classList.remove('hidden');
       validationMsg.textContent = warningMsg;
-      if (isBlocker) {
-        validationBox.className = 'callout callout-warning';
-        btnRun.disabled = true;
-      } else {
-        validationBox.className = 'callout callout-warning';
-        btnRun.disabled = false;
-      }
+      btnRun.disabled = isBlocker;
     } else {
       validationBox.classList.add('hidden');
       btnRun.disabled = false;
@@ -542,7 +716,7 @@
     const newGaps = [];
 
     for (let i = 0; i < numGaps; i++) {
-      const gapDur = 50 + Math.random() * 40; // 50 - 90 ms
+      const gapDur = 50 + Math.random() * 40;
       const start = Math.random() * (durMs - gapDur - 100);
       newGaps.push([Math.round(start), Math.round(start + gapDur)]);
     }
@@ -557,7 +731,7 @@
     const data = rawAudioBuffer.getChannelData(0);
     const sr = rawAudioBuffer.sampleRate;
     const threshold = 1e-4;
-    const minSamples = Math.round(0.02 * sr); // 20 ms
+    const minSamples = Math.round(0.02 * sr);
     const detected = [];
 
     let inRun = false;
@@ -587,9 +761,8 @@
 
     if (detected.length > 0) {
       gaps = detected;
-      alert(`Auto-detected ${detected.length} silent/corrupted gap(s).`);
     } else {
-      alert('No silent/zeroed regions detected in this audio. Click and drag on the waveform to mark gaps manually.');
+      alert('No silent intervals detected. Click and drag on waveform to mark corrupted gaps manually.');
     }
 
     renderWaveform();
@@ -606,9 +779,7 @@
       return;
     }
 
-    // Clone buffer and zero out gaps
     const sampleRate = rawAudioBuffer.sampleRate;
-    const durMs = rawAudioBuffer.duration * 1000;
     const previewBuffer = ctx.createBuffer(1, rawAudioBuffer.length, sampleRate);
     const inData = rawAudioBuffer.getChannelData(0);
     const outData = previewBuffer.getChannelData(0);
@@ -629,8 +800,17 @@
     previewSourceNode.start(0);
 
     isPlayingPreview = true;
-    playBtnText.textContent = 'Stop';
+    previewStartContextTime = ctx.currentTime;
+    playBtnText.textContent = 'STOP';
     btnPlayPreview.classList.add('active');
+
+    // Drive playhead redraws at ~60 fps while audio plays
+    function tickPlayhead() {
+      if (!isPlayingPreview) return;
+      renderWaveform();
+      rafPlayhead = requestAnimationFrame(tickPlayhead);
+    }
+    rafPlayhead = requestAnimationFrame(tickPlayhead);
   }
 
   function stopPreviewPlayback() {
@@ -641,17 +821,22 @@
       } catch (e) {}
       previewSourceNode = null;
     }
+    if (rafPlayhead !== null) {
+      cancelAnimationFrame(rafPlayhead);
+      rafPlayhead = null;
+    }
     isPlayingPreview = false;
-    playBtnText.textContent = 'Play';
+    playBtnText.textContent = 'PREVIEW';
     btnPlayPreview.classList.remove('active');
+    renderWaveform(); // clear playhead
   }
 
   // --- Presets UI ---
   function setupPresetSelection() {
     presetRadios.forEach((radio) => {
       radio.addEventListener('change', () => {
-        document.querySelectorAll('.preset-card').forEach((card) => card.classList.remove('selected'));
-        radio.closest('.preset-card').classList.add('selected');
+        document.querySelectorAll('.preset-choice').forEach((card) => card.classList.remove('selected'));
+        radio.closest('.preset-choice').classList.add('selected');
       });
     });
   }
@@ -726,7 +911,6 @@
       formData.append('mode', 'gaps');
       formData.append('gaps_json', JSON.stringify(gaps));
     } else if (rawAudioBuffer) {
-      // Export current synthetic or decoded buffer as a WAV
       const wavBlob = bufferToWavBlob(rawAudioBuffer);
       formData.append('audio', wavBlob, 'synthetic.wav');
       formData.append('mode', 'gaps');
@@ -746,11 +930,13 @@
     progressContainer.classList.remove('hidden');
     resultsSection.classList.add('hidden');
     progressBarFill.style.width = '0%';
-    progressEpochCounter.textContent = 'Starting job...';
+    progressEpochCounter.textContent = 'INIT...';
     lossHistory = [];
     clearLossCanvas();
     liveSpecImg.classList.remove('active');
-    specPlaceholderText.textContent = 'Connecting to optimization stream...';
+    specPlaceholderText.classList.remove('hidden');
+    specPlaceholderText.textContent = 'CONNECTING TO OPTIMIZATION STREAM...';
+    if (spectrogramStateTag) spectrogramStateTag.textContent = 'INITIALIZING DEEP PRIOR';
 
     try {
       const response = await fetch('/api/jobs', {
@@ -793,9 +979,9 @@
     eventSource.onerror = (err) => {
       console.warn('SSE connection interrupted:', err);
       if (eventSource && eventSource.readyState === EventSource.CLOSED) {
-        progressStatusBadge.textContent = 'Disconnected';
-        progressStatusBadge.className = 'badge text-danger';
-        specPlaceholderText.textContent = 'Connection to server lost. The server may have stopped or crashed.';
+        progressStatusBadge.textContent = 'DISCONNECTED';
+        progressStatusBadge.style.color = '#E5484D';
+        specPlaceholderText.textContent = 'OPTIMIZATION STREAM DISCONNECTED';
         specPlaceholderText.classList.remove('hidden');
         btnRun.disabled = false;
         btnCancel.classList.add('hidden');
@@ -806,28 +992,30 @@
   function handleProgressEvent(event) {
     if (event.type === 'status') {
       if (event.status === 'running') {
-        progressStatusBadge.textContent = 'Running';
-        progressStatusBadge.className = 'badge';
-        progressStatusBadge.style.color = '#38bdf8';
-        progressEpochCounter.textContent = `Epoch ${event.epoch || 0} / ${event.epochs || '...'}`;
-        specPlaceholderText.textContent = 'Optimizing deep prior... First preview arriving soon.';
+        progressStatusBadge.textContent = 'RUNNING';
+        progressStatusBadge.style.color = 'var(--recon)';
+        progressEpochCounter.textContent = `0 / ${event.epochs || '...'}`;
+        specPlaceholderText.textContent = 'OPTIMIZING HARMONIC CONVOLUTIONS...';
       } else if (event.status === 'queued') {
-        progressStatusBadge.textContent = 'Queued';
-        progressStatusBadge.className = 'badge badge-idle';
-        progressEpochCounter.textContent = 'Waiting in queue...';
+        progressStatusBadge.textContent = 'QUEUED';
+        progressStatusBadge.style.color = 'var(--fg-muted)';
+        progressEpochCounter.textContent = 'IN QUEUE';
       }
     } else if (event.type === 'progress') {
-      progressStatusBadge.textContent = 'Running';
-      progressStatusBadge.className = 'badge';
-      progressStatusBadge.style.color = '#38bdf8';
+      progressStatusBadge.textContent = 'RUNNING';
+      progressStatusBadge.style.color = 'var(--recon)';
       const epoch = event.epoch;
       const totalEpochs = event.epochs;
       const pct = Math.min(100, (epoch / totalEpochs) * 100);
 
       progressBarFill.style.width = `${pct.toFixed(1)}%`;
-      progressEpochCounter.textContent = `Epoch ${epoch} / ${totalEpochs}`;
-      progressEtaText.textContent = `ETA: ${event.eta_s ? event.eta_s + 's' : 'Calculating...'}`;
+      progressEpochCounter.textContent = `${epoch} / ${totalEpochs}`;
+      progressEtaText.textContent = event.eta_s ? `${event.eta_s}s` : '--';
       currentLossText.textContent = `loss: ${event.loss.toExponential(4)}`;
+
+      if (spectrogramStateTag) {
+        spectrogramStateTag.textContent = `OPTIMIZING (EP ${epoch}/${totalEpochs})`;
+      }
 
       // Update loss curve
       lossHistory.push(event.loss);
@@ -842,24 +1030,26 @@
     } else if (event.type === 'completed' || event.status === 'completed') {
       if (eventSource) eventSource.close();
       progressBarFill.style.width = '100%';
-      progressStatusBadge.textContent = 'Completed';
-      progressStatusBadge.className = 'badge badge-idle';
+      progressStatusBadge.textContent = 'COMPLETE';
+      progressStatusBadge.style.color = 'var(--missing)';
       btnRun.disabled = false;
       btnCancel.classList.add('hidden');
       displayJobResults(currentJobId, event);
     } else if (event.type === 'cancelled' || event.status === 'cancelled') {
       if (eventSource) eventSource.close();
-      progressStatusBadge.textContent = 'Cancelled';
-      progressStatusBadge.className = 'badge text-danger';
+      progressStatusBadge.textContent = 'CANCELLED';
+      progressStatusBadge.style.color = 'var(--danger)';
       btnRun.disabled = false;
       btnCancel.classList.add('hidden');
+      if (spectrogramStateTag) spectrogramStateTag.textContent = 'CANCELLED';
       alert('Inpainting job was cancelled.');
     } else if (event.type === 'failed' || event.status === 'failed') {
       if (eventSource) eventSource.close();
-      progressStatusBadge.textContent = 'Failed';
-      progressStatusBadge.className = 'badge text-danger';
+      progressStatusBadge.textContent = 'FAILED';
+      progressStatusBadge.style.color = 'var(--danger)';
       btnRun.disabled = false;
       btnCancel.classList.add('hidden');
+      if (spectrogramStateTag) spectrogramStateTag.textContent = 'FAILED';
       alert(`Job failed: ${event.error || 'Unknown optimization error'}`);
     }
   }
@@ -873,7 +1063,7 @@
     }
   }
 
-  // --- Loss Curve Canvas Drawing ---
+  // --- Loss Curve Canvas Drawing (MASTER.md palette: #0E0F11 bg, #FFB020 recon line) ---
   function clearLossCanvas() {
     const ctx = lossCanvas.getContext('2d');
     ctx.clearRect(0, 0, lossCanvas.width, lossCanvas.height);
@@ -886,21 +1076,31 @@
     const h = lossCanvas.height;
 
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = '#04060b';
+    ctx.fillStyle = '#0E0F11';
     ctx.fillRect(0, 0, w, h);
+
+    // Subtle horizontal gridlines
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, h * 0.25); ctx.lineTo(w, h * 0.25);
+    ctx.moveTo(0, h * 0.50); ctx.lineTo(w, h * 0.50);
+    ctx.moveTo(0, h * 0.75); ctx.lineTo(w, h * 0.75);
+    ctx.stroke();
 
     const minLoss = Math.min(...history);
     const maxLoss = Math.max(...history);
     const range = maxLoss - minLoss || 1e-6;
 
-    ctx.strokeStyle = '#06b6d4';
+    // Line in --recon #FFB020
+    ctx.strokeStyle = '#FFB020';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
 
     for (let i = 0; i < history.length; i++) {
-      const x = (i / (history.length - 1)) * (w - 10) + 5;
+      const x = (i / (history.length - 1)) * (w - 8) + 4;
       const normalized = (history[i] - minLoss) / range;
-      const y = (1 - normalized) * (h - 16) + 8;
+      const y = (1 - normalized) * (h - 14) + 7;
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     }
@@ -916,7 +1116,6 @@
       localStorage.setItem('dpai_last_run_id', effectiveId);
     } catch (_) {}
 
-    // Fetch full job data
     let job = null;
     try {
       let resp = await fetch(`/api/jobs/${effectiveId}`);
@@ -930,7 +1129,6 @@
 
     const cacheBuster = Date.now();
 
-    // Set download WAV link
     const reconUrl = `/api/jobs/${effectiveId}/files/reconstruction.wav`;
     const corrUrl = `/api/jobs/${effectiveId}/files/corrupted.wav`;
     const cleanUrl = `/api/jobs/${effectiveId}/files/clean.wav`;
@@ -943,7 +1141,7 @@
 
     btnDownloadWav.href = `${reconUrl}?download=true`;
 
-    // Default to playing reconstructed audio
+    // Default to reconstructed audio
     switchAbAudio('reconstruction');
 
     // Metrics
@@ -983,6 +1181,12 @@
     imgSpecReconstructed.src = `/api/jobs/${effectiveId}/files/spec_reconstructed.png?t=${cacheBuster}`;
     imgLossCurve.src = `/api/jobs/${effectiveId}/files/loss_curve.png?t=${cacheBuster}`;
 
+    // Update main scope view with reconstructed spectrogram
+    liveSpecImg.src = imgSpecReconstructed.src;
+    liveSpecImg.classList.add('active');
+    specPlaceholderText.classList.add('hidden');
+    if (spectrogramStateTag) spectrogramStateTag.textContent = 'RECONSTRUCTION SCOPE';
+
     if (job && job.files && job.files.includes('spec_clean.png')) {
       imgSpecClean.src = `/api/jobs/${effectiveId}/files/spec_clean.png?t=${cacheBuster}`;
       colSpecClean.classList.remove('hidden');
@@ -992,7 +1196,7 @@
       btnAbClean.classList.add('hidden');
     }
 
-    // Smooth scroll down to results
+    // Smooth scroll down to transport deck
     resultsSection.scrollIntoView({ behavior: 'smooth' });
   }
 
@@ -1012,12 +1216,15 @@
     if (type === 'reconstruction') {
       btnAbReconstructed.classList.add('active');
       audioPlayback.src = activeResultUrls.reconstruction;
+      if (spectrogramStateTag) spectrogramStateTag.textContent = 'SOLO // RECONSTRUCTED';
     } else if (type === 'corrupted') {
       btnAbCorrupted.classList.add('active');
       audioPlayback.src = activeResultUrls.corrupted;
+      if (spectrogramStateTag) spectrogramStateTag.textContent = 'SOLO // CORRUPTED INPUT';
     } else if (type === 'clean') {
       btnAbClean.classList.add('active');
       audioPlayback.src = activeResultUrls.clean;
+      if (spectrogramStateTag) spectrogramStateTag.textContent = 'SOLO // CLEAN REFERENCE';
     }
 
     audioPlayback.currentTime = currentTime;
@@ -1028,17 +1235,17 @@
 
   // --- Examples Gallery ---
   async function loadExamplesGallery() {
-    galleryGrid.innerHTML = '<div class="loading-spinner">Loading gallery examples...</div>';
+    galleryGrid.innerHTML = '<div class="rack-loader">SCANNING EXAMPLES DATABASE...</div>';
 
     try {
       const resp = await fetch('examples/index.json');
       if (!resp.ok) {
         galleryGrid.innerHTML = `
-          <div class="callout callout-info" style="grid-column: 1/-1;">
+          <div class="rack-alert" style="grid-column: 1/-1;">
+            <span class="alert-icon">!</span>
             <div>
               <strong>Examples Gallery Empty</strong>
-              <p>Precomputed example clips have not been generated yet. Run:
-              <code>python scripts/precompute_examples.py</code> to populate the gallery.</p>
+              <p>Run: <code>python scripts/precompute_examples.py</code> to populate precomputed benchmark clips.</p>
             </div>
           </div>
         `;
@@ -1049,7 +1256,7 @@
       const examples = data.examples || [];
 
       if (examples.length === 0) {
-        galleryGrid.innerHTML = '<p class="text-secondary">No examples found in index.json.</p>';
+        galleryGrid.innerHTML = '<p class="param-label">NO EXAMPLES FOUND IN INDEX.JSON</p>';
         return;
       }
 
@@ -1060,30 +1267,30 @@
         card.innerHTML = `
           <div class="gallery-header">
             <span class="gallery-title">${ex.title || ex.clip_id}</span>
-            <span class="gallery-meta">${ex.gap_ms} ms Gap • ${ex.epochs || 5000} ep</span>
+            <span class="gallery-meta">${ex.gap_ms} MS GAP // ${ex.epochs || 5000} EP</span>
           </div>
           <p class="gallery-desc">${ex.description || 'Precomputed benchmark reconstruction.'}</p>
           <div class="img-frame">
             <img src="${ex.spectrogram_url || `examples/${ex.id}/spectrogram.png`}" alt="${ex.title}">
           </div>
-          <div class="audio-player-ui">
-            <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:4px;">Reconstruction:</label>
-            <audio controls src="${ex.audio_url || `examples/${ex.id}/reconstruction.wav`}" class="native-player"></audio>
+          <div class="param-item">
+            <span class="param-label">RECONSTRUCTED SIGNAL:</span>
+            <audio controls src="${ex.audio_url || `examples/${ex.id}/reconstruction.wav`}" class="native-player-docked"></audio>
           </div>
-          <div class="audio-player-ui">
-            <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:4px;">Corrupted Input:</label>
-            <audio controls src="${ex.corrupted_url || `examples/${ex.id}/corrupted.wav`}" class="native-player"></audio>
+          <div class="param-item">
+            <span class="param-label">CORRUPTED INPUT:</span>
+            <audio controls src="${ex.corrupted_url || `examples/${ex.id}/corrupted.wav`}" class="native-player-docked"></audio>
           </div>
         `;
         galleryGrid.appendChild(card);
       });
     } catch (e) {
       galleryGrid.innerHTML = `
-        <div class="callout callout-info" style="grid-column: 1/-1;">
+        <div class="rack-alert" style="grid-column: 1/-1;">
+          <span class="alert-icon">!</span>
           <div>
-            <strong>Examples Gallery</strong>
-            <p>To populate this gallery with precomputed benchmark clips, run:</p>
-            <p><code>python scripts/precompute_examples.py</code></p>
+            <strong>Examples Gallery Unavailable</strong>
+            <p>Run: <code>python scripts/precompute_examples.py</code></p>
           </div>
         </div>
       `;
