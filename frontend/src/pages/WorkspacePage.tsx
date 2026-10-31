@@ -81,6 +81,8 @@ export function WorkspacePage() {
   const regionsRef = useRef<GapRegion[]>([])
   const [gapDuration, setGapDuration] = useState(200)
   const [numGaps, setNumGaps] = useState(1)
+  const [manualStartMs, setManualStartMs] = useState(0)
+  const [manualEndMs, setManualEndMs] = useState(200)
   const [silenceThreshold, setSilenceThreshold] = useState(-60)
   const [minSilenceDuration, setMinSilenceDuration] = useState(50)
   
@@ -227,6 +229,39 @@ export function WorkspacePage() {
     addToHistory(newRegions)
     setRegions(newRegions)
   }, [audioDuration, numGaps, gapDuration, clearRegions, addToHistory])
+
+  const addManualGap = useCallback(() => {
+    if (!audioDuration) {
+      setValidationWarning('Upload audio before adding a manual gap.')
+      return
+    }
+
+    const start = manualStartMs / 1000
+    const end = manualEndMs / 1000
+    const overlaps = regionsRef.current.some(region => start < region.end && end > region.start)
+    if (manualStartMs < 0 || manualEndMs <= manualStartMs || end > audioDuration) {
+      setValidationWarning(`Manual gap must be within 0–${(audioDuration * 1000).toFixed(0)} ms.`)
+      return
+    }
+    if (overlaps) {
+      setValidationWarning('Manual gap overlaps an existing region.')
+      return
+    }
+
+    const region: GapRegion = {
+      id: `region-${++regionIdCounter.current}`,
+      start,
+      end,
+      type: 'manual',
+      color: REGION_COLORS.manual,
+    }
+    const updatedRegions = [...regionsRef.current, region].sort((a, b) => a.start - b.start)
+    regionsRef.current = updatedRegions
+    addToHistory(updatedRegions)
+    setRegions(updatedRegions)
+    setSelectedRegionId(region.id)
+    setValidationWarning(null)
+  }, [audioDuration, manualEndMs, manualStartMs, addToHistory])
   
   const handleDetectSilence = useCallback(async () => {
     if (!audioFile || !audioDuration) return
@@ -469,7 +504,11 @@ export function WorkspacePage() {
     })
 
     regionPlugin.on('region-created', (region) => {
-      if (syncingRegionsRef.current || gapModeRef.current !== 'manual') return
+      if (syncingRegionsRef.current) return
+      if (gapModeRef.current !== 'manual') {
+        region.remove()
+        return
+      }
 
       const manualRegion: GapRegion = {
         id: region.id,
@@ -478,7 +517,15 @@ export function WorkspacePage() {
         type: 'manual',
         color: REGION_COLORS.manual,
       }
-      const updatedRegions = [...regionsRef.current, manualRegion]
+      const overlaps = regionsRef.current.some(existing => (
+        manualRegion.start < existing.end && manualRegion.end > existing.start
+      ))
+      if (overlaps) {
+        region.remove()
+        setValidationWarning('Manual gap overlaps an existing region.')
+        return
+      }
+      const updatedRegions = [...regionsRef.current, manualRegion].sort((a, b) => a.start - b.start)
       addToHistory(updatedRegions)
       regionsRef.current = updatedRegions
       setRegions(updatedRegions)
@@ -1066,6 +1113,35 @@ export function WorkspacePage() {
                   <div className="grid grid-cols-2 gap-4">
                     <Input label="Gap Duration (ms)" type="number" value={gapDuration} onChange={e => setGapDuration(parseInt(e.target.value) || 0)} min={10} max={1000} />
                     <Input label="Number of Gaps" type="number" value={numGaps} onChange={e => setNumGaps(parseInt(e.target.value) || 0)} min={1} max={10} />
+                  </div>
+                )}
+
+                {gapMode === 'manual' && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-[var(--fg-muted)]">
+                      Enter exact boundaries or drag across the waveform. Manual gaps cannot overlap.
+                    </p>
+                    <div className="grid grid-cols-2 gap-4">
+                      <Input
+                        label="Start (ms)"
+                        type="number"
+                        value={manualStartMs}
+                        onChange={e => setManualStartMs(Number(e.target.value))}
+                        min={0}
+                        step={1}
+                      />
+                      <Input
+                        label="End (ms)"
+                        type="number"
+                        value={manualEndMs}
+                        onChange={e => setManualEndMs(Number(e.target.value))}
+                        min={1}
+                        step={1}
+                      />
+                    </div>
+                    <Button variant="secondary" size="sm" onClick={addManualGap} disabled={!audioFile || jobStatus === 'running'}>
+                      Add Manual Gap
+                    </Button>
                   </div>
                 )}
                 
