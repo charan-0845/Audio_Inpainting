@@ -145,7 +145,7 @@ export function Sidebar({ isLanding = false }: SidebarProps) {
             </Tooltip>
           </div>
 
-          <nav className="flex-1 px-2 py-4 space-y-1 overflow-y-auto" aria-label="Main navigation">
+          <nav className="flex flex-1 flex-col px-2 py-4 space-y-1 overflow-y-auto" aria-label="Main navigation">
             {navItems.map((item) => {
               const isActive = location.pathname === item.path
               return (

@@ -45,7 +45,7 @@ export function Topbar({ title, subtitle, children, showBackLink = false, backHr
               </Link>
             )}
 
-            <div className="flex-1 min-w-0">
+            <div className="min-w-0">
               {title && (
                 <h1 className="text-lg font-semibold text-[var(--fg)] truncate">{title}</h1>
               )}
@@ -53,35 +53,35 @@ export function Topbar({ title, subtitle, children, showBackLink = false, backHr
                 <p className="text-sm text-[var(--fg-muted)] truncate">{subtitle}</p>
               )}
             </div>
-          </div>
 
-          {!isLanding && (
-            <nav className="hidden lg:flex items-center gap-1" aria-label="Platform navigation">
-              {[
-                { path: '/', label: 'Home', icon: Home },
-                { path: '/research', label: 'About Research', icon: BookOpen },
-                { path: '/research/methodology', label: 'Methodology', icon: GitBranch },
-                { path: '/documentation', label: 'Documentation', icon: Code },
-              ].map(item => (
-                <NavLink
-                  key={item.path}
-                  to={item.path}
-                  className={({ isActive }) =>
-                    cn(
-                      'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors',
-                      'hover:bg-[var(--raised)] hover:text-[var(--fg)]',
-                      isActive
-                        ? 'bg-[var(--primary)]/10 text-[var(--primary)]'
-                        : 'text-[var(--fg-muted)]'
-                    )
-                  }
-                >
-                  <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>{item.label}</span>
-                </NavLink>
-              ))}
-            </nav>
-          )}
+            {!isLanding && (
+              <nav className="hidden lg:flex items-center gap-1" aria-label="Platform navigation">
+                {[
+                  { path: '/', label: 'Home', icon: Home },
+                  { path: '/research', label: 'About Research', icon: BookOpen },
+                  { path: '/research/methodology', label: 'Methodology', icon: GitBranch },
+                  { path: '/documentation', label: 'Documentation', icon: Code },
+                ].map(item => (
+                  <NavLink
+                    key={item.path}
+                    to={item.path}
+                    className={({ isActive }) =>
+                      cn(
+                        'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors',
+                        'hover:bg-[var(--raised)] hover:text-[var(--fg)]',
+                        isActive
+                          ? 'bg-[var(--primary)]/10 text-[var(--primary)]'
+                          : 'text-[var(--fg-muted)]'
+                      )
+                    }
+                  >
+                    <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>{item.label}</span>
+                  </NavLink>
+                ))}
+              </nav>
+            )}
+          </div>
 
           <div className="flex items-center gap-3 flex-shrink-0">
             {isLanding && (
