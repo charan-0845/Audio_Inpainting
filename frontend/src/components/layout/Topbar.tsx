@@ -31,8 +31,8 @@ export function Topbar({ title, subtitle, children, showBackLink = false, backHr
       role="banner"
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-start h-16 gap-4">
-          <div className="flex items-center gap-4 min-w-0">
+        <div className="flex items-center justify-between h-16 gap-4">
+          <div className="flex items-center gap-4 flex-1 min-w-0">
             {showBackLink && (
               <Link
                 to={backHref}
@@ -83,7 +83,7 @@ export function Topbar({ title, subtitle, children, showBackLink = false, backHr
             )}
           </div>
 
-          <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
+          <div className="flex items-center gap-3 flex-shrink-0">
             {isLanding && (
               <Link to="/dashboard" className="hidden sm:inline-flex">
                 <Button variant="primary" size="sm">
