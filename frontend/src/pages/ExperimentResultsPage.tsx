@@ -30,6 +30,7 @@ export function ExperimentResultsPage() {
   const waveformBufferRef = useRef<AudioBuffer | null>(null)
   const redrawWaveformRef = useRef<(() => void) | null>(null)
   const hoverPointRef = useRef<{ x: number; time: number; amplitude: number } | null>(null)
+  const playbackMarkerRef = useRef<{ x: number; time: number } | null>(null)
   const [waveformHover, setWaveformHover] = useState<{ x: number; time: number; amplitude: number } | null>(null)
   const [playingAudio, setPlayingAudio] = useState<string | null>(null)
 
@@ -125,6 +126,20 @@ export function ExperimentResultsPage() {
             context.arc(hover.x, mid - hover.amplitude * amplitude, 3, 0, Math.PI * 2)
             context.fill()
           }
+
+          const playbackMarker = playbackMarkerRef.current
+          if (playbackMarker) {
+            context.strokeStyle = '#ffffff'
+            context.lineWidth = 2
+            context.beginPath()
+            context.moveTo(playbackMarker.x + 0.5, 0)
+            context.lineTo(playbackMarker.x + 0.5, rect.height)
+            context.stroke()
+            context.fillStyle = '#ffffff'
+            context.beginPath()
+            context.arc(playbackMarker.x, 6, 4, 0, Math.PI * 2)
+            context.fill()
+          }
         }
 
         redrawWaveformRef.current = draw
@@ -135,6 +150,7 @@ export function ExperimentResultsPage() {
           redrawWaveformRef.current = null
           waveformBufferRef.current = null
           hoverPointRef.current = null
+          playbackMarkerRef.current = null
         }
       } catch (error) {
         if (!cancelled) setError(error instanceof Error ? error.message : 'Unable to draw waveform')
@@ -148,6 +164,30 @@ export function ExperimentResultsPage() {
       cleanup?.()
     }
   }, [activeAudio, activeTab, audioSources])
+
+  useEffect(() => {
+    if (!playingAudio || playingAudio !== activeAudio) return
+
+    let animationFrame = 0
+    const updatePlaybackMarker = () => {
+      const element = audioElementsRef.current[playingAudio]
+      const buffer = waveformBufferRef.current
+      const canvas = waveformCanvasRef.current
+      if (element && buffer && canvas && buffer.duration > 0) {
+        const rect = canvas.getBoundingClientRect()
+        const time = Math.min(element.currentTime, buffer.duration)
+        playbackMarkerRef.current = {
+          x: Math.max(0, Math.min(rect.width, (time / buffer.duration) * rect.width)),
+          time,
+        }
+        redrawWaveformRef.current?.()
+      }
+      animationFrame = window.requestAnimationFrame(updatePlaybackMarker)
+    }
+
+    animationFrame = window.requestAnimationFrame(updatePlaybackMarker)
+    return () => window.cancelAnimationFrame(animationFrame)
+  }, [playingAudio, activeAudio])
 
   const handleWaveformMove = (event: MouseEvent<HTMLCanvasElement>) => {
     const canvas = event.currentTarget
@@ -168,6 +208,12 @@ export function ExperimentResultsPage() {
   const clearWaveformHover = () => {
     hoverPointRef.current = null
     setWaveformHover(null)
+    redrawWaveformRef.current?.()
+  }
+
+  const clearPlaybackMarker = (type: string) => {
+    if (type !== activeAudio) return
+    playbackMarkerRef.current = null
     redrawWaveformRef.current?.()
   }
 
@@ -412,8 +458,14 @@ export function ExperimentResultsPage() {
                     src={audioSources[key as keyof typeof audioSources]}
                     controls
                     onPlay={() => { setActiveAudio(key as 'reconstructed' | 'corrupted' | 'clean'); setPlayingAudio(key) }}
-                    onPause={() => setPlayingAudio(current => current === key ? null : current)}
-                    onEnded={() => setPlayingAudio(current => current === key ? null : current)}
+                    onPause={() => {
+                      setPlayingAudio(current => current === key ? null : current)
+                      clearPlaybackMarker(key)
+                    }}
+                    onEnded={() => {
+                      setPlayingAudio(current => current === key ? null : current)
+                      clearPlaybackMarker(key)
+                    }}
                     className="w-full"
                   />
                   <div className="mt-2 flex items-center justify-between">
