@@ -768,16 +768,27 @@ export function WorkspacePage() {
                             ?.setOptions({ start: region.start, end: region.end })
                         }}
                       >
-                        <span className="flex items-center gap-2">
-                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: region.color }} />
-                          <span>Region {index + 1}</span>
-                          <span className="text-[var(--fg-muted)]">
-                            {region.type === 'auto' ? 'Auto-detected' : 'Manual'}
-                          </span>
-                        </span>
-                        <span className="font-mono text-[var(--fg-muted)]">
-                          {(region.start * 1000).toFixed(0)}–{(region.end * 1000).toFixed(0)} ms
-                        </span>
+                        {(() => {
+                          const durationMs = (region.end - region.start) * 1000
+                          const durationLabel = durationMs >= 1000
+                            ? `${(durationMs / 1000).toFixed(2)} s`
+                            : `${durationMs.toFixed(0)} ms`
+                          return (
+                            <>
+                              <span className="flex items-center gap-2">
+                                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: region.color }} />
+                                <span>Region {index + 1}</span>
+                                <span className="text-[var(--fg-muted)]">
+                                  {region.type === 'auto' ? 'Auto-detected' : 'Manual'}
+                                </span>
+                              </span>
+                              <span className="flex items-center gap-3 font-mono text-[var(--fg-muted)]">
+                                <span>{(region.start * 1000).toFixed(0)}–{(region.end * 1000).toFixed(0)} ms</span>
+                                <span className="font-semibold text-[var(--fg)]">{durationLabel}</span>
+                              </span>
+                            </>
+                          )
+                        })()}
                       </button>
                     ))}
                   </div>
