@@ -67,8 +67,11 @@ export function WorkspacePage() {
   const [regions, setRegions] = useState<GapRegion[]>([])
   const regionIdCounter = useRef(0)
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null)
-  const [history, setHistory] = useState<GapRegion[][]>([])
-  const [historyIndex, setHistoryIndex] = useState(-1)
+  const [history, setHistory] = useState<GapRegion[][]>([[]])
+  const [historyIndex, setHistoryIndex] = useState(0)
+  const historyRef = useRef<GapRegion[][]>([[]])
+  const historyIndexRef = useRef(0)
+  const [zoom, setZoom] = useState(10)
   
   // Refs for callbacks to avoid circular dependencies in keyboard handler
   const updateRegionInStateRef = useRef<((id: string, start: number, end: number) => void) | null>(null)
@@ -109,13 +112,13 @@ export function WorkspacePage() {
 
   // Region management callbacks (defined early to avoid hoisting issues)
   const addToHistory = useCallback((newRegions: GapRegion[]) => {
-    setHistory(prev => {
-      const newHistory = prev.slice(0, historyIndex + 1)
-      newHistory.push(newRegions)
-      return newHistory.slice(-50)
-    })
-    setHistoryIndex(prev => prev + 1)
-  }, [historyIndex])
+    const newHistory = [...historyRef.current.slice(0, historyIndexRef.current + 1), newRegions].slice(-50)
+    const newIndex = newHistory.length - 1
+    historyRef.current = newHistory
+    historyIndexRef.current = newIndex
+    setHistory(newHistory)
+    setHistoryIndex(newIndex)
+  }, [])
   
   const updateRegionInState = useCallback((id: string, start: number, end: number) => {
     setRegions(prev => {
@@ -155,6 +158,7 @@ export function WorkspacePage() {
   const undo = useCallback(() => {
     if (historyIndex > 0) {
       const newIndex = historyIndex - 1
+      historyIndexRef.current = newIndex
       setHistoryIndex(newIndex)
       setRegions(history[newIndex])
     }
@@ -163,6 +167,7 @@ export function WorkspacePage() {
   const redo = useCallback(() => {
     if (historyIndex < history.length - 1) {
       const newIndex = historyIndex + 1
+      historyIndexRef.current = newIndex
       setHistoryIndex(newIndex)
       setRegions(history[newIndex])
     }
@@ -172,6 +177,8 @@ export function WorkspacePage() {
     setRegions([])
     setHistory([[]])
     setHistoryIndex(0)
+    historyRef.current = [[]]
+    historyIndexRef.current = 0
     if (regionsPluginRef.current) {
       regionsPluginRef.current.clearRegions()
     }
@@ -193,8 +200,8 @@ export function WorkspacePage() {
       newRegions.push({ id: `region-${Date.now()}-${i}`, start: start / 1000, end: end / 1000, type: 'auto', color: REGION_COLORS.auto })
     }
     
-    setRegions(newRegions)
     addToHistory(newRegions)
+    setRegions(newRegions)
   }, [audioDuration, numGaps, gapDuration, clearRegions, addToHistory])
   
   const handleDetectSilence = useCallback(async () => {
@@ -215,8 +222,8 @@ export function WorkspacePage() {
       }
 
       clearRegions()
-      setRegions(detected)
       addToHistory(detected)
+      setRegions(detected)
       setValidationError(null)
     } catch (error) {
       setValidationError(error instanceof Error ? error.message : 'Silence detection failed')
@@ -728,8 +735,11 @@ export function WorkspacePage() {
                   <Slider
                     min={1}
                     max={100}
-                    value={10}
-                    onValueChange={v => { if (wavesurferRef.current) wavesurferRef.current.zoom(v); }}
+                    value={zoom}
+                    onValueChange={v => {
+                      setZoom(v)
+                      wavesurferRef.current?.zoom(v)
+                    }}
                     className="w-32"
                   />
                 </div>
