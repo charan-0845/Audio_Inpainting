@@ -1,12 +1,12 @@
 import { ReactNode } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, NavLink, useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Tooltip } from '@/components/ui/Tooltip'
 import { Badge } from '@/components/ui/Badge'
 import { useBackend } from '@/features/backend-connection/BackendContext'
 import { useTheme } from '@/features/backend-connection/ThemeContext'
-import { Sun, Moon, Monitor, Bell, Zap } from 'lucide-react'
+import { Sun, Moon, Monitor, Bell, Zap, BookOpen, Code, GitBranch, Home } from 'lucide-react'
 
 interface TopbarProps {
   title?: string
@@ -54,6 +54,34 @@ export function Topbar({ title, subtitle, children, showBackLink = false, backHr
               )}
             </div>
           </div>
+
+          {!isLanding && (
+            <nav className="hidden lg:flex items-center gap-1" aria-label="Platform navigation">
+              {[
+                { path: '/', label: 'Home', icon: Home },
+                { path: '/research', label: 'About Research', icon: BookOpen },
+                { path: '/research/methodology', label: 'Methodology', icon: GitBranch },
+                { path: '/documentation', label: 'Documentation', icon: Code },
+              ].map(item => (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  className={({ isActive }) =>
+                    cn(
+                      'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors',
+                      'hover:bg-[var(--raised)] hover:text-[var(--fg)]',
+                      isActive
+                        ? 'bg-[var(--primary)]/10 text-[var(--primary)]'
+                        : 'text-[var(--fg-muted)]'
+                    )
+                  }
+                >
+                  <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>{item.label}</span>
+                </NavLink>
+              ))}
+            </nav>
+          )}
 
           <div className="flex items-center gap-3 flex-shrink-0">
             {isLanding && (
