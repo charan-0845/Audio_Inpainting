@@ -8,7 +8,6 @@ import { Badge } from '@/components/ui/Badge'
 import { Select } from '@/components/ui/Select'
 import { Dialog } from '@/components/ui/Dialog'
 import { Tooltip } from '@/components/ui/Tooltip'
-import { Slider } from '@/components/ui/Slider'
 import { Separator } from '@/components/ui/Separator'
 import { Progress } from '@/components/ui/Progress'
 import { Label } from '@/components/ui/Label'
@@ -71,7 +70,6 @@ export function WorkspacePage() {
   const [historyIndex, setHistoryIndex] = useState(0)
   const historyRef = useRef<GapRegion[][]>([[]])
   const historyIndexRef = useRef(0)
-  const [zoom, setZoom] = useState(10)
   
   // Refs for callbacks to avoid circular dependencies in keyboard handler
   const updateRegionInStateRef = useRef<((id: string, start: number, end: number) => void) | null>(null)
@@ -730,19 +728,6 @@ export function WorkspacePage() {
                 
                 <div className="flex-1" />
                 
-                <div className="flex items-center gap-2">
-                  <Label className="text-xs">Zoom</Label>
-                  <Slider
-                    min={1}
-                    max={100}
-                    value={zoom}
-                    onValueChange={v => {
-                      setZoom(v)
-                      wavesurferRef.current?.zoom(v)
-                    }}
-                    className="w-32"
-                  />
-                </div>
               </div>
               
               {/* Waveform container */}
