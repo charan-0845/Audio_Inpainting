@@ -61,6 +61,7 @@ export function WorkspacePage() {
   const syncingRegionsRef = useRef(false)
   const waveformContainerRef = useRef<HTMLDivElement>(null)
   const spectrogramContainerRef = useRef<HTMLDivElement>(null)
+  const [waveformReady, setWaveformReady] = useState(false)
   
   // Gap regions (managed locally, synced with WaveSurfer)
   const [regions, setRegions] = useState<GapRegion[]>([])
@@ -420,6 +421,7 @@ export function WorkspacePage() {
     
     ws.on('ready', () => {
       setAudioDuration(ws.getDuration())
+      setWaveformReady(true)
     })
     
     regionPlugin.on('region-clicked', (region, e) => {
@@ -445,12 +447,13 @@ export function WorkspacePage() {
       ws.destroy()
       wavesurferRef.current = null
       regionsPluginRef.current = null
+      setWaveformReady(false)
     }
   }, [])
   
   // Sync regions with WaveSurfer
   useEffect(() => {
-    if (!regionsPluginRef.current) return
+    if (!regionsPluginRef.current || !waveformReady) return
 
     // Clear existing regions
     syncingRegionsRef.current = true
@@ -468,7 +471,7 @@ export function WorkspacePage() {
       })
     })
     syncingRegionsRef.current = false
-  }, [regions])
+  }, [regions, waveformReady])
   
   // Keyboard accessibility for region editing
   useEffect(() => {
@@ -747,8 +750,36 @@ export function WorkspacePage() {
                       <span className="text-xs text-[var(--fg-muted)]">Auto-detected</span>
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    <span className="text-xs text-[var(--fg-muted)]">No regions</span>
+                  <div className="space-y-2">
+                    {regions.map((region, index) => (
+                      <button
+                        key={region.id}
+                        type="button"
+                        className={cn(
+                          'flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-xs transition-colors',
+                          selectedRegionId === region.id
+                            ? 'border-[var(--accent)] bg-[var(--accent)]/10'
+                            : 'border-[var(--border)] hover:border-[var(--accent)]/60',
+                        )}
+                        onClick={() => {
+                          setSelectedRegionId(region.id)
+                          regionsPluginRef.current?.getRegions()
+                            .find(waveRegion => waveRegion.id === region.id)
+                            ?.setOptions({ start: region.start, end: region.end })
+                        }}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: region.color }} />
+                          <span>Region {index + 1}</span>
+                          <span className="text-[var(--fg-muted)]">
+                            {region.type === 'auto' ? 'Auto-detected' : 'Manual'}
+                          </span>
+                        </span>
+                        <span className="font-mono text-[var(--fg-muted)]">
+                          {(region.start * 1000).toFixed(0)}–{(region.end * 1000).toFixed(0)} ms
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 </div>
           )} 
