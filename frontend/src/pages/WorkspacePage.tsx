@@ -192,19 +192,38 @@ export function WorkspacePage() {
   // Gap mode handlers
   const handleRandomGaps = useCallback(() => {
     if (!audioDuration) return
-    clearRegions()
-    
-    const totalMs = audioDuration * 1000
-    const newRegions: GapRegion[] = []
-    
-    for (let i = 0; i < numGaps; i++) {
-      const gapMs = gapDuration
-      const maxStart = totalMs - gapMs - 100
-      const start = Math.random() * Math.max(100, maxStart)
-      const end = start + gapMs
-      newRegions.push({ id: `region-${Date.now()}-${i}`, start: start / 1000, end: end / 1000, type: 'auto', color: REGION_COLORS.auto })
+    const gapSeconds = gapDuration / 1000
+    const separatorSeconds = 0.01
+    const requiredSeconds = (numGaps * gapSeconds) + (Math.max(0, numGaps - 1) * separatorSeconds)
+    if (gapDuration <= 0 || numGaps <= 0 || requiredSeconds > audioDuration) {
+      setValidationWarning(
+        `Cannot place ${numGaps} non-overlapping gaps of ${gapDuration} ms in ${audioDuration.toFixed(2)} seconds.`,
+      )
+      return
     }
-    
+
+    clearRegions()
+
+    const freeSeconds = audioDuration - requiredSeconds
+    const cuts = Array.from({ length: numGaps }, () => Math.random() * freeSeconds).sort((a, b) => a - b)
+    const newRegions: GapRegion[] = []
+
+    let cursor = 0
+    for (let i = 0; i < numGaps; i++) {
+      const margin = cuts[i] - (i > 0 ? cuts[i - 1] : 0)
+      const start = cursor + margin
+      const end = start + gapSeconds
+      newRegions.push({
+        id: `region-${Date.now()}-${i}`,
+        start,
+        end,
+        type: 'auto',
+        color: REGION_COLORS.auto,
+      })
+      cursor = end + separatorSeconds
+    }
+
+    setValidationWarning(null)
     addToHistory(newRegions)
     setRegions(newRegions)
   }, [audioDuration, numGaps, gapDuration, clearRegions, addToHistory])
