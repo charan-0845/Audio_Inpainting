@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,10 +29,11 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app import _auto_device, _build_cfg, _deep_merge, _load_config
-from src.audio.corruption import create_mask, extract_mask_from_audio
+from src.audio.corruption import create_mask, detect_silence_regions, extract_mask_from_audio
 from src.audio.loader import load_audio, make_synthetic_audio
-from src.audio.stft import channels_to_stft, crop_to_shape
-from src.pipeline.inpainter import DPAIInpainter
+from src.audio.lpc_baseline import lpc_inpaint
+from src.audio.stft import channels_to_stft, compute_stft, crop_to_shape
+from src.pipeline.inpainter import DPAIInpainter, InpaintResult
 from src.pipeline.io import make_run_id, save_run
 from src.utils.visualization import plot_spectrogram
 
@@ -54,6 +56,15 @@ WHITELIST_FILES = {
 }
 
 PRESETS: Dict[str, Dict[str, Any]] = {
+    "lpc": {
+        "optimization": {"epochs": 0},
+        "model": {
+            "type": "lpc",
+            "base_filters": 0,
+            "channel_schedule": [],
+            "use_harmonic": False,
+        },
+    },
     "fast": {
         "optimization": {"epochs": 300},
         "model": {
@@ -83,6 +94,15 @@ def get_presets_for_device(device: str = "cpu") -> Dict[str, Dict[str, Any]]:
     """Return device-adapted presets to prevent memory exhaustion and timeout on CPU."""
     if device == "cpu":
         return {
+            "lpc": {
+                "optimization": {"epochs": 0},
+                "model": {
+                    "type": "lpc",
+                    "base_filters": 0,
+                    "channel_schedule": [],
+                    "use_harmonic": False,
+                },
+            },
             "fast": {
                 "optimization": {"epochs": 100},
                 "model": {
@@ -383,59 +403,96 @@ class JobManager:
             })
 
             try:
-                inpainter = DPAIInpainter(job.cfg, device=job.device)
-                sr = int(job.cfg["audio"]["sample_rate"])
-                stft_params = inpainter._stft_params()
+                sr = int(job.cfg.get("audio", {}).get("sample_rate", 16000))
                 corrupted = job.wav * job.mask
+                is_lpc = job.cfg.get("model", {}).get("type") == "lpc" or total_epochs == 0
 
-                # Derive padding & shape for preview rendering
-                observed_ch, _ = inpainter._compute_observed_channels(corrupted)
-                num_bins = observed_ch.shape[-2]
-                _, tfmask = inpainter._build_tf_mask(job.mask, num_bins)
-                _, _, original_shape = inpainter._pad(observed_ch, tfmask)
+                if is_lpc:
+                    # Quick reconstruction via LPC bidirectional crossfade baseline
+                    t0 = time.time()
+                    match_energy = bool(job.cfg.get("lpc", {}).get("match_energy", True))
+                    noise_excitation = bool(job.cfg.get("lpc", {}).get("noise_excitation", True))
+                    recon_waveform = lpc_inpaint(
+                        corrupted,
+                        mask=job.mask,
+                        noise_excitation=noise_excitation,
+                        match_energy=match_energy,
+                        seed=job.seed,
+                    )
+                    if bool(job.cfg.get("pipeline", {}).get("preserve_observed", True)):
+                        recon_waveform = corrupted + (1.0 - job.mask) * recon_waveform
+                    runtime_s = max(0.001, time.time() - t0)
 
-                def progress_cb(
-                    epoch: int, ep_total: int, loss_val: float, output: torch.Tensor
-                ) -> None:
-                    if job.cancel_event.is_set():
-                        raise JobCancelledException("Job was cancelled by client.")
+                    # Compute STFT for visualization
+                    stft_cfg = job.cfg.get("stft", {})
+                    n_fft = int(stft_cfg.get("n_fft", 1024))
+                    hop = int(stft_cfg.get("hop_length", 120))
+                    win = int(stft_cfg.get("win_length", 600))
+                    recon_tensor = torch.from_numpy(recon_waveform.astype(np.float32))
+                    final_spec = compute_stft(recon_tensor, n_fft=n_fft, hop_length=hop, win_length=win).numpy()
 
-                    elapsed = time.time() - (job.started_at or time.time())
-                    time_per_ep = elapsed / (epoch + 1)
-                    rem = max(0, ep_total - (epoch + 1))
-                    eta_s = max(0.0, round(rem * time_per_ep, 1))
+                    result = InpaintResult(
+                        waveform=recon_waveform.astype(np.float32),
+                        loss_history=[0.0],
+                        val_loss_history=[],
+                        final_spectrogram=final_spec,
+                        runtime_s=runtime_s,
+                        epochs=0,
+                        seed=job.seed,
+                        n_params=0,
+                    )
+                else:
+                    inpainter = DPAIInpainter(job.cfg, device=job.device)
+                    stft_params = inpainter._stft_params()
 
-                    job.progress = {
-                        "epoch": epoch + 1,
-                        "epochs": ep_total,
-                        "loss": round(loss_val, 6),
-                        "eta_s": eta_s,
-                    }
+                    # Derive padding & shape for preview rendering
+                    observed_ch, _ = inpainter._compute_observed_channels(corrupted)
+                    num_bins = observed_ch.shape[-2]
+                    _, tfmask = inpainter._build_tf_mask(job.mask, num_bins)
+                    _, _, original_shape = inpainter._pad(observed_ch, tfmask)
 
-                    preview_interval = max(1, min(50, ep_total // 10))
-                    preview_b64: Optional[str] = None
-                    if epoch == 0 or (epoch + 1) % preview_interval == 0 or (epoch + 1) == ep_total:
-                        preview_b64 = _render_preview(
-                            output, original_shape, stft_params, sr, epoch + 1, ep_total
-                        )
+                    def progress_cb(
+                        epoch: int, ep_total: int, loss_val: float, output: torch.Tensor
+                    ) -> None:
+                        if job.cancel_event.is_set():
+                            raise JobCancelledException("Job was cancelled by client.")
 
-                    job.publish_event({
-                        "type": "progress",
-                        "epoch": epoch + 1,
-                        "epochs": ep_total,
-                        "loss": loss_val,
-                        "eta_s": eta_s,
-                        "preview": preview_b64,
-                    })
+                        elapsed = time.time() - (job.started_at or time.time())
+                        time_per_ep = elapsed / (epoch + 1)
+                        rem = max(0, ep_total - (epoch + 1))
+                        eta_s = max(0.0, round(rem * time_per_ep, 1))
 
-                result = inpainter.inpaint(
-                    corrupted=corrupted,
-                    sample_mask=job.mask,
-                    reference=job.clean,
-                    epochs=total_epochs,
-                    seed=job.seed,
-                    callbacks=[progress_cb],
-                )
+                        job.progress = {
+                            "epoch": epoch + 1,
+                            "epochs": ep_total,
+                            "loss": round(loss_val, 6),
+                            "eta_s": eta_s,
+                        }
+
+                        preview_interval = max(1, min(50, ep_total // 10))
+                        preview_b64: Optional[str] = None
+                        if epoch == 0 or (epoch + 1) % preview_interval == 0 or (epoch + 1) == ep_total:
+                            preview_b64 = _render_preview(
+                                output, original_shape, stft_params, sr, epoch + 1, ep_total
+                            )
+
+                        job.publish_event({
+                            "type": "progress",
+                            "epoch": epoch + 1,
+                            "epochs": ep_total,
+                            "loss": loss_val,
+                            "eta_s": eta_s,
+                            "preview": preview_b64,
+                        })
+
+                    result = inpainter.inpaint(
+                        corrupted=corrupted,
+                        sample_mask=job.mask,
+                        reference=job.clean,
+                        epochs=total_epochs,
+                        seed=job.seed,
+                        callbacks=[progress_cb],
+                    )
 
                 run_dir = save_run(
                     result=result,
@@ -593,6 +650,62 @@ def create_app(
             "device": app.state.device,
         }
 
+    @app.post("/api/detect-silence")
+    async def detect_silence(
+        audio: UploadFile = File(...),
+        threshold_db: float = Form(-60.0),
+        min_gap_ms: float = Form(50.0),
+    ) -> Dict[str, Any]:
+        """Detect sustained low-energy regions in an uploaded audio file."""
+        max_bytes = 20 * 1024 * 1024
+        content = await audio.read()
+        if len(content) > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Uploaded audio exceeds 20 MB limit.",
+            )
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+            tmp_file.write(content)
+            tmp_path = Path(tmp_file.name)
+        try:
+            sr = int(app.state.base_cfg["audio"]["sample_rate"])
+            wav = load_audio(tmp_path, sample_rate=sr).numpy().astype(np.float32)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to decode audio file: {exc}",
+            ) from exc
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+        duration_s = len(wav) / sr
+        if duration_s > float(app.state.max_seconds) + 1e-3:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Audio duration ({duration_s:.2f}s) exceeds maximum allowed limit ({app.state.max_seconds:.1f}s).",
+            )
+
+        try:
+            regions = detect_silence_regions(
+                wav,
+                sr,
+                threshold_db=threshold_db,
+                min_gap_ms=min_gap_ms,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+        return {
+            "sample_rate": sr,
+            "duration_seconds": duration_s,
+            "regions": [
+                {"start": round(start, 6), "end": round(end, 6)}
+                for start, end in regions
+            ],
+        }
+
     @app.post("/api/jobs", status_code=status.HTTP_201_CREATED)
     async def submit_job(
         audio: Optional[UploadFile] = File(None),
@@ -697,13 +810,18 @@ def create_app(
         actual_gap_ms: float = 0.0
 
         if mode == "detect":
-            mask = extract_mask_from_audio(wav).astype(np.float32)
-            missing = (mask == 0.0).sum()
-            if missing == 0:
+            regions = detect_silence_regions(wav, sr)
+            if not regions:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Auto-detect found no silent/zeroed regions in this audio.",
                 )
+            gaps = [[start * 1000.0, end * 1000.0] for start, end in regions]
+            try:
+                mask, warnings = parse_and_validate_gaps(gaps, duration_ms, sr, num_samples)
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+            missing = (mask == 0.0).sum()
             missing_ratio = missing / num_samples
             if missing_ratio >= 0.40:
                 raise HTTPException(
@@ -973,10 +1091,400 @@ def create_app(
         )
 
     # -----------------------------------------------------------------------
-    # Static files mount
+    # Experiment listing and management (read-only)
     # -----------------------------------------------------------------------
-    static_dir = Path(__file__).resolve().parent / "static"
+
+    @app.get("/api/experiments")
+    async def list_experiments(
+        search: Optional[str] = None,
+        status: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict[str, Any]:
+        """List experiments from run directories with filtering and pagination."""
+        runs_root = Path(app.state.out_dir)
+        if not runs_root.exists():
+            return {"runs": [], "total": 0}
+
+        all_runs = []
+        for run_dir in runs_root.iterdir():
+            if not run_dir.is_dir():
+                continue
+
+            meta_file = run_dir / "meta.json"
+            metrics_file = run_dir / "metrics.json"
+
+            meta = {}
+            metrics = {}
+            if meta_file.is_file():
+                try:
+                    meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            if metrics_file.is_file():
+                try:
+                    metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            produced_files = [
+                p.name for p in sorted(run_dir.iterdir()) if p.name in WHITELIST_FILES
+            ]
+
+            # Determine status from meta or job manager
+            job = job_manager.get(run_dir.name)
+            run_status = job.status.value if job else "completed"
+
+            run_data = {
+                "id": run_dir.name,
+                "clip_id": meta.get("clip_id", ""),
+                "gap_ms": meta.get("gap_ms", 0),
+                "seed": meta.get("seed", 0),
+                "epochs": meta.get("epochs", 0),
+                "runtime_s": meta.get("runtime_s", 0),
+                "device": meta.get("device", "cpu"),
+                "status": run_status,
+                "metrics": metrics if metrics else None,
+                "n_params": meta.get("n_params"),
+                "created_at": meta.get("created_at"),  # Not in meta, would need file mtime
+                "files": produced_files,
+            }
+
+            # Add file mtime as created_at fallback
+            try:
+                run_data["created_at"] = run_dir.stat().st_mtime
+            except Exception:
+                pass
+
+            # Apply filters
+            if search and search.lower() not in run_data["clip_id"].lower() and search.lower() not in run_data["id"].lower():
+                continue
+            if status and status != "all" and run_status != status:
+                continue
+            if date_from:
+                try:
+                    from_ts = datetime.fromisoformat(date_from).timestamp()
+                    if run_data["created_at"] and run_data["created_at"] < from_ts:
+                        continue
+                except Exception:
+                    pass
+            if date_to:
+                try:
+                    to_ts = datetime.fromisoformat(date_to).timestamp()
+                    if run_data["created_at"] and run_data["created_at"] > to_ts:
+                        continue
+                except Exception:
+                    pass
+
+            all_runs.append(run_data)
+
+        # Sort
+        reverse = sort_order == "desc"
+        if sort_by == "created_at":
+            all_runs.sort(key=lambda x: x.get("created_at") or 0, reverse=reverse)
+        elif sort_by == "gap_ms":
+            all_runs.sort(key=lambda x: x.get("gap_ms", 0), reverse=reverse)
+        elif sort_by == "runtime_s":
+            all_runs.sort(key=lambda x: x.get("runtime_s", 0), reverse=reverse)
+        elif sort_by == "nmse_tot_db":
+            all_runs.sort(key=lambda x: (x.get("metrics") or {}).get("nmse_tot_db") or float('inf'), reverse=reverse)
+
+        total = len(all_runs)
+        start = (page - 1) * page_size
+        end = start + page_size
+        paginated = all_runs[start:end]
+
+        return {"runs": paginated, "total": total}
+
+    @app.get("/api/experiments/{experiment_id}")
+    async def get_experiment(experiment_id: str) -> Dict[str, Any]:
+        """Get detailed experiment information."""
+        # First check job manager
+        job = job_manager.get(experiment_id)
+        if job:
+            return job.to_dict()
+
+        # Fallback to disk
+        run_dir = Path(app.state.out_dir) / experiment_id
+        if not run_dir.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Experiment '{experiment_id}' not found.",
+            )
+
+        meta_file = run_dir / "meta.json"
+        metrics_file = run_dir / "metrics.json"
+
+        meta = {}
+        metrics = {}
+        if meta_file.is_file():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        if metrics_file.is_file():
+            try:
+                metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        produced_files = [
+            p.name for p in sorted(run_dir.iterdir()) if p.name in WHITELIST_FILES
+        ]
+
+        return {
+            "id": run_dir.name,
+            "clip_id": meta.get("clip_id", ""),
+            "gap_ms": meta.get("gap_ms", 0),
+            "seed": meta.get("seed", 0),
+            "epochs": meta.get("epochs", 0),
+            "runtime_s": meta.get("runtime_s", 0),
+            "device": meta.get("device", "cpu"),
+            "status": "completed",
+            "metrics": metrics if metrics else None,
+            "n_params": meta.get("n_params"),
+            "created_at": run_dir.stat().st_mtime,
+            "files": produced_files,
+        }
+
+    @app.post("/api/experiments/compare")
+    async def compare_experiments(request: Dict[str, str]) -> Dict[str, Any]:
+        """Compare two experiments."""
+        id_a = request.get("experiment_a")
+        id_b = request.get("experiment_b")
+
+        if not id_a or not id_b:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Both experiment_a and experiment_b are required.",
+            )
+
+        if id_a == id_b:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot compare an experiment with itself.",
+            )
+
+        exp_a = await get_experiment(id_a)
+        exp_b = await get_experiment(id_b)
+
+        # Compare metrics
+        metrics_a = exp_a.get("metrics") or {}
+        metrics_b = exp_b.get("metrics") or {}
+
+        def get_metric(m: Dict, key: str):
+            val = m.get(key)
+            return val if val is not None else None
+
+        nmse_tot_a = get_metric(metrics_a, "nmse_tot_db")
+        nmse_tot_b = get_metric(metrics_b, "nmse_tot_db")
+        nmse_miss_a = get_metric(metrics_a, "nmse_miss_db")
+        nmse_miss_b = get_metric(metrics_b, "nmse_miss_db")
+
+        metrics_comparison = {
+            "nmse_tot_db": {
+                "a": nmse_tot_a,
+                "b": nmse_tot_b,
+                "diff": (nmse_tot_b - nmse_tot_a) if (nmse_tot_a is not None and nmse_tot_b is not None) else None,
+            },
+            "nmse_miss_db": {
+                "a": nmse_miss_a,
+                "b": nmse_miss_b,
+                "diff": (nmse_miss_b - nmse_miss_a) if (nmse_miss_a is not None and nmse_miss_b is not None) else None,
+            },
+            "runtime_s": {
+                "a": exp_a.get("runtime_s", 0),
+                "b": exp_b.get("runtime_s", 0),
+                "diff": exp_b.get("runtime_s", 0) - exp_a.get("runtime_s", 0),
+            },
+            "epochs": {
+                "a": exp_a.get("epochs", 0),
+                "b": exp_b.get("epochs", 0),
+            },
+            "n_params": {
+                "a": exp_a.get("n_params"),
+                "b": exp_b.get("n_params"),
+            },
+        }
+
+        # Compare configs
+        config_a_file = Path(app.state.out_dir) / id_a / "config_snapshot.yaml"
+        config_b_file = Path(app.state.out_dir) / id_b / "config_snapshot.yaml"
+
+        config_a = {}
+        config_b = {}
+        if config_a_file.is_file():
+            try:
+                config_a = yaml.safe_load(config_a_file.read_text(encoding="utf-8")) or {}
+            except Exception:
+                pass
+        if config_b_file.is_file():
+            try:
+                config_b = yaml.safe_load(config_b_file.read_text(encoding="utf-8")) or {}
+            except Exception:
+                pass
+
+        all_keys = set(config_a.keys()) | set(config_b.keys())
+        config_differences = {}
+        for key in sorted(all_keys):
+            val_a = config_a.get(key)
+            val_b = config_b.get(key)
+            config_differences[key] = {
+                "a": val_a,
+                "b": val_b,
+                "same": val_a == val_b,
+            }
+
+        # Condition flags
+        condition_flags = []
+        if exp_a.get("clip_id") != exp_b.get("clip_id"):
+            condition_flags.append(f"Different source audio: '{exp_a.get('clip_id')}' vs '{exp_b.get('clip_id')}'")
+        if exp_a.get("gap_ms") != exp_b.get("gap_ms"):
+            condition_flags.append(f"Different gap durations: {exp_a.get('gap_ms')}ms vs {exp_b.get('gap_ms')}")
+        if exp_a.get("device") != exp_b.get("device"):
+            condition_flags.append(f"Different devices: {exp_a.get('device')} vs {exp_b.get('device')}")
+        if exp_a.get("metrics") and exp_b.get("metrics"):
+            if (exp_a["metrics"].get("pesq_delta") is None) != (exp_b["metrics"].get("pesq_delta") is None):
+                condition_flags.append("Only one experiment has reference audio for PESQ evaluation")
+        if exp_a.get("n_params") != exp_b.get("n_params"):
+            condition_flags.append(f"Different model sizes: {exp_a.get('n_params')} vs {exp_b.get('n_params')} params")
+
+        return {
+            "experiment_a": exp_a,
+            "experiment_b": exp_b,
+            "metrics_comparison": metrics_comparison,
+            "config_differences": config_differences,
+            "condition_flags": condition_flags,
+        }
+
+    @app.delete("/api/experiments/{experiment_id}")
+    async def delete_experiment(experiment_id: str) -> Dict[str, Any]:
+        """Safely delete an experiment and its artifacts."""
+        # Check if job is active - first try exact match in registry
+        job = job_manager.get(experiment_id)
+
+        # If not found by exact ID, check if any job in registry has a run_dir matching this experiment_id
+        if not job:
+            for j in job_manager.registry.values():
+                if j.run_dir and j.run_dir.name == experiment_id:
+                    job = j
+                    break
+
+        if job and job.status in (JobStatus.RUNNING, JobStatus.QUEUED):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot delete experiment '{experiment_id}': job is {job.status.value}.",
+            )
+
+        # Resolve run directory - if job found, use its run_dir; otherwise use experiment_id as directory name
+        if job and job.run_dir:
+            run_dir = job.run_dir
+        else:
+            run_dir = Path(app.state.out_dir) / experiment_id
+        runs_root = Path(app.state.out_dir).resolve()
+
+        # Path containment check
+        try:
+            run_dir_resolved = run_dir.resolve()
+            if not run_dir_resolved.is_relative_to(runs_root):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: path traversal attempt detected.",
+                )
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid experiment ID.",
+            )
+
+        if not run_dir.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Experiment '{experiment_id}' not found.",
+            )
+
+        # Symlink check
+        if run_dir.is_symlink():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot delete symlink directories.",
+            )
+
+        # Delete directory contents
+        import shutil
+        try:
+            shutil.rmtree(run_dir)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to delete experiment: {e}",
+            )
+
+        # Remove from job manager if present
+        if experiment_id in job_manager.registry:
+            del job_manager.registry[experiment_id]
+
+        return {"deleted": experiment_id}
+
+    # -----------------------------------------------------------------------
+    # Static files mount (React SPA build)
+    # -----------------------------------------------------------------------
+    # Serve the React build from frontend/dist
+    static_dir = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
     if static_dir.exists():
-        app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+        # Mount static assets (JS, CSS, images) with cache headers - MUST be first
+        assets_dir = static_dir / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+        # Preserve the legacy static endpoints used by existing examples and
+        # integrations while the React application handles the main UI.
+        legacy_static_dir = Path(__file__).resolve().parent / "static"
+        legacy_examples_dir = legacy_static_dir / "examples"
+        if legacy_examples_dir.exists():
+            app.mount(
+                "/examples",
+                StaticFiles(directory=str(legacy_examples_dir)),
+                name="legacy-examples",
+            )
+
+        for legacy_name in ("app.js", "style.css"):
+            legacy_file = legacy_static_dir / legacy_name
+            if legacy_file.exists():
+                app.add_api_route(
+                    f"/{legacy_name}",
+                    lambda legacy_file=legacy_file: FileResponse(legacy_file),
+                    methods=["GET"],
+                    name=f"legacy-{legacy_name.replace('.', '-')}",
+                )
+        
+        # Serve favicon and other root static files
+        @app.get("/favicon.svg")
+        async def favicon():
+            favicon_file = static_dir / "favicon.svg"
+            if favicon_file.exists():
+                return FileResponse(favicon_file)
+            raise HTTPException(status_code=404, detail="Favicon not found")
+
+        # SPA fallback: serve index.html for all non-API, non-asset routes
+        # This must be after all API routes and asset mounts
+        @app.get("/{full_path:path}")
+        async def spa_fallback(full_path: str):
+            # Skip API routes - let them return 404 naturally
+            if full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="API route not found")
+            # Skip asset routes (already handled by static mount)
+            if full_path.startswith("assets/"):
+                raise HTTPException(status_code=404, detail="Asset not found")
+            # Serve index.html for all other routes (client-side routing)
+            index_file = static_dir / "index.html"
+            if index_file.exists():
+                return FileResponse(index_file)
+            raise HTTPException(status_code=404, detail="Frontend not built")
 
     return app

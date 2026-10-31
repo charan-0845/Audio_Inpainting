@@ -196,3 +196,45 @@ def extract_mask_from_audio(
         return torch.from_numpy(mask).to(device=corrupted_audio.device, dtype=corrupted_audio.dtype)
     return mask
 
+
+def detect_silence_regions(
+    audio: np.ndarray,
+    sample_rate: int,
+    threshold_db: float = -60.0,
+    min_gap_ms: float = 50.0,
+    window_ms: float = 10.0,
+    merge_gap_ms: float = 20.0,
+) -> list[tuple[float, float]]:
+    """Detect sustained low-energy regions using short-time RMS.
+
+    Unlike :func:`extract_mask_from_audio`, this does not classify individual
+    zero crossings as silence. It is intended for user-facing silence detection
+    and returns regions as ``(start_seconds, end_seconds)`` pairs.
+    """
+    arr = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be positive.")
+    if min_gap_ms < 0 or window_ms <= 0 or merge_gap_ms < 0:
+        raise ValueError("Silence detection durations must be non-negative.")
+
+    window_size = max(1, round(sample_rate * window_ms / 1000.0))
+    hop_size = max(1, round(window_size / 2))
+    threshold = 10.0 ** (threshold_db / 20.0)
+    silent_frames: list[tuple[float, float]] = []
+
+    for start in range(0, len(arr), hop_size):
+        end = min(len(arr), start + window_size)
+        rms = float(np.sqrt(np.mean(np.square(arr[start:end]))))
+        if rms <= threshold:
+            silent_frames.append((start / sample_rate, end / sample_rate))
+
+    regions: list[list[float]] = []
+    merge_gap = merge_gap_ms / 1000.0
+    for start, end in silent_frames:
+        if not regions or start - regions[-1][1] > merge_gap:
+            regions.append([start, end])
+        else:
+            regions[-1][1] = max(regions[-1][1], end)
+
+    min_gap = min_gap_ms / 1000.0
+    return [(start, end) for start, end in regions if end - start >= min_gap]

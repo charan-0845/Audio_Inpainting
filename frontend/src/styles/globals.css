@@ -1,0 +1,175 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: #F5F5F0;
+    --surface: #FFFFFF;
+    --raised: #FAFAF8;
+    --border: rgba(0, 0, 0, 0.08);
+    --border-strong: rgba(0, 0, 0, 0.14);
+    --fg: #1D1D1B;
+    --fg-muted: #6B6B66;
+    --primary: #6D28D9;
+    --primary-hover: #5B21B6;
+    --primary-foreground: #FFFFFF;
+    --missing: #0D9488;
+    --recon: #EA580C;
+    --manual: #6D28D9;
+    --danger: #DC2626;
+    --ring: #6D28D9;
+  }
+
+  .dark {
+    --bg: #0E0F11;
+    --surface: #16181B;
+    --raised: #1D2024;
+    --border: rgba(255, 255, 255, 0.07);
+    --border-strong: rgba(255, 255, 255, 0.14);
+    --fg: #E8E6E1;
+    --fg-muted: #8A8F98;
+    --primary: #8B5CF6;
+    --primary-hover: #A78BFA;
+    --primary-foreground: #0E0F11;
+    --missing: #3DD6C6;
+    --recon: #FFB020;
+    --manual: #8B5CF6;
+    --danger: #E5484D;
+    --ring: #8B5CF6;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply bg-[var(--bg)] text-[var(--fg)] font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-[var(--ring)] ring-offset-2 ring-offset-[var(--bg)];
+  }
+
+  ::selection {
+    @apply bg-[var(--primary)] text-[var(--primary-foreground)];
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors duration-140 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none;
+  }
+
+  .btn-primary {
+    @apply btn bg-[var(--primary)] text-[var(--primary-foreground)] hover:bg-[var(--primary-hover)];
+  }
+
+  .btn-secondary {
+    @apply btn bg-[var(--surface)] text-[var(--fg)] border border-[var(--border)] hover:bg-[var(--raised)] hover:border-[var(--border-strong)];
+  }
+
+  .btn-danger {
+    @apply btn bg-[var(--danger)] text-white hover:bg-red-700;
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent text-[var(--fg)] hover:bg-[var(--raised)];
+  }
+
+  .btn-icon {
+    @apply btn p-2;
+  }
+
+  .card {
+    @apply bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-card;
+  }
+
+  .card-elevated {
+    @apply bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-elevated;
+  }
+
+  .input {
+    @apply w-full rounded-md bg-[var(--bg)] border border-[var(--border)] px-3 py-2 text-sm text-[var(--fg)] placeholder-[var(--fg-muted)] transition-colors duration-150 focus:border-[var(--ring)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)];
+  }
+
+  .label {
+    @apply block text-xs font-medium text-[var(--fg-muted)] uppercase tracking-wider mb-1;
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-xs px-2 py-0.5 text-xs font-medium;
+  }
+
+  .badge-primary {
+    @apply badge bg-[var(--primary)]/10 text-[var(--primary)];
+  }
+
+  .badge-success {
+    @apply badge bg-green-500/10 text-green-600 dark:text-green-400;
+  }
+
+  .badge-warning {
+    @apply badge bg-amber-500/10 text-amber-600 dark:text-amber-400;
+  }
+
+  .badge-danger {
+    @apply badge bg-red-500/10 text-red-600 dark:text-red-400;
+  }
+
+  .divider {
+    @apply h-px bg-[var(--border)];
+  }
+
+  .divider-vertical {
+    @apply w-px h-4 bg-[var(--border)];
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 3px;
+  }
+
+  .animate-fade-in {
+    animation: fade-in 140ms ease-out;
+  }
+
+  .animate-slide-up {
+    animation: slide-up 140ms ease-out;
+  }
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}

@@ -875,7 +875,7 @@ button:focus-visible, input:focus-visible, [tabindex="0"]:focus-visible {
 /* Preset Segmented Choice */
 .preset-segmented-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 4px;
 }
 
