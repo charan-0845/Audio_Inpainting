@@ -77,6 +77,8 @@ export function WorkspacePage() {
   
   // Gap modes
   const [gapMode, setGapMode] = useState<'manual' | 'random' | 'detect'>('manual')
+  const gapModeRef = useRef(gapMode)
+  const regionsRef = useRef<GapRegion[]>([])
   const [gapDuration, setGapDuration] = useState(200)
   const [numGaps, setNumGaps] = useState(1)
   const [silenceThreshold, setSilenceThreshold] = useState(-60)
@@ -152,6 +154,11 @@ export function WorkspacePage() {
     
     return region
   }, [addToHistory])
+
+  useEffect(() => {
+    gapModeRef.current = gapMode
+    regionsRef.current = regions
+  }, [gapMode, regions])
   
   const undo = useCallback(() => {
     if (historyIndex > 0) {
@@ -405,6 +412,14 @@ export function WorkspacePage() {
     if (!waveformContainerRef.current || wavesurferRef.current) return
     
     const regionPlugin = RegionsPlugin.create()
+    const disableDragSelection = regionPlugin.enableDragSelection(
+      {
+        color: `${REGION_COLORS.manual}40`,
+        drag: true,
+        resize: true,
+      },
+      5,
+    )
     const ws = WaveSurfer.create({
       container: waveformContainerRef.current,
       waveColor: '#6D28D9',
@@ -434,6 +449,22 @@ export function WorkspacePage() {
       setSelectedRegionId(region.id)
     })
 
+    regionPlugin.on('region-created', (region) => {
+      if (syncingRegionsRef.current || gapModeRef.current !== 'manual') return
+
+      const manualRegion: GapRegion = {
+        id: region.id,
+        start: region.start,
+        end: region.end,
+        type: 'manual',
+        color: REGION_COLORS.manual,
+      }
+      const updatedRegions = [...regionsRef.current, manualRegion]
+      addToHistory(updatedRegions)
+      regionsRef.current = updatedRegions
+      setRegions(updatedRegions)
+    })
+
     regionPlugin.on('region-updated', (region) => {
       updateRegionInState(region.id, region.start, region.end)
     })
@@ -449,12 +480,13 @@ export function WorkspacePage() {
     })
     
     return () => {
+      disableDragSelection()
       ws.destroy()
       wavesurferRef.current = null
       regionsPluginRef.current = null
       setWaveformReady(false)
     }
-  }, [])
+  }, [addToHistory])
   
   // Sync regions with WaveSurfer
   useEffect(() => {
@@ -731,7 +763,12 @@ export function WorkspacePage() {
               </div>
               
               {/* Waveform container */}
-              <div ref={waveformContainerRef} className="rounded-md bg-[var(--bg)] border border-[var(--border)] overflow-hidden" />
+              <div className="rounded-md bg-[var(--bg)] border border-[var(--border)] overflow-hidden">
+                <div ref={waveformContainerRef} />
+              </div>
+              <p className="mt-2 text-xs text-[var(--fg-muted)]">
+                Manual mode: drag across the waveform to mark a missing gap. Drag a region edge to fine-tune it.
+              </p>
               
               {/* Region list */}
               {regions.length > 0 && (
