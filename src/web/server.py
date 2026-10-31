@@ -654,7 +654,7 @@ def create_app(
     async def detect_silence(
         audio: UploadFile = File(...),
         threshold_db: float = Form(-60.0),
-        min_gap_ms: float = Form(50.0),
+        min_gap_ms: float = Form(40.0),
     ) -> Dict[str, Any]:
         """Detect sustained low-energy regions in an uploaded audio file."""
         max_bytes = 20 * 1024 * 1024

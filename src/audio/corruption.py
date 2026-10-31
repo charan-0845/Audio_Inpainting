@@ -201,7 +201,7 @@ def detect_silence_regions(
     audio: np.ndarray,
     sample_rate: int,
     threshold_db: float = -60.0,
-    min_gap_ms: float = 50.0,
+    min_gap_ms: float = 40.0,
     window_ms: float = 10.0,
     merge_gap_ms: float = 20.0,
 ) -> list[tuple[float, float]]:

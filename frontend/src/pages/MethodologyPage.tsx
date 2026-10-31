@@ -222,7 +222,7 @@ Reconstruction: iSTFT(complex_stft) â†’ waveform`}
               <p className="text-[var(--fg-muted)]">Detects near-zero regions in audio.</p>
               <ul className="list-disc list-inside text-sm text-[var(--fg-muted)] mt-2 space-y-1">
                 <li>Threshold: -60 dB (configurable)</li>
-                <li>Min duration: 50ms (configurable)</li>
+                <li>Min duration: 40ms (configurable)</li>
                 <li>Operates on sample-level</li>
                 <li>Editable before reconstruction</li>
               </ul>
@@ -422,5 +422,4 @@ Requires clean reference audio`}
     </PageLayout>
   )
 }
-
 

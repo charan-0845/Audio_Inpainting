@@ -84,7 +84,7 @@ export function WorkspacePage() {
   const [manualStartMs, setManualStartMs] = useState(0)
   const [manualEndMs, setManualEndMs] = useState(200)
   const [silenceThreshold, setSilenceThreshold] = useState(-60)
-  const [minSilenceDuration, setMinSilenceDuration] = useState(50)
+  const [minSilenceDuration, setMinSilenceDuration] = useState(40)
   
   // Configuration
   const [preset, setPreset] = useState('fast')
