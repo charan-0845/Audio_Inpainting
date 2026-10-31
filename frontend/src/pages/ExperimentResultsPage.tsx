@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type CSSProperties } from 'react'
+import { useState, useEffect, useRef, type CSSProperties, type MouseEvent } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { Download, Volume2, VolumeX, RotateCcw, RotateCw, ChevronLeft, ChevronRight, ArrowRight, CheckCircle, XCircle, AlertTriangle, FileAudio, Settings, BarChart2, Music, Mic } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
@@ -27,6 +27,10 @@ export function ExperimentResultsPage() {
   const [activeAudio, setActiveAudio] = useState<'reconstructed' | 'corrupted' | 'clean'>('reconstructed')
   const audioElementsRef = useRef<Record<string, HTMLAudioElement>>({})
   const waveformCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const waveformBufferRef = useRef<AudioBuffer | null>(null)
+  const redrawWaveformRef = useRef<(() => void) | null>(null)
+  const hoverPointRef = useRef<{ x: number; time: number; amplitude: number } | null>(null)
+  const [waveformHover, setWaveformHover] = useState<{ x: number; time: number; amplitude: number } | null>(null)
   const [playingAudio, setPlayingAudio] = useState<string | null>(null)
 
   useEffect(() => {
@@ -77,6 +81,7 @@ export function ExperimentResultsPage() {
         const buffer = await audioContext.decodeAudioData(await response.arrayBuffer())
         await audioContext.close()
         if (cancelled) return
+        waveformBufferRef.current = buffer
 
         const context = canvas.getContext('2d')
         if (!context) return
@@ -106,11 +111,31 @@ export function ExperimentResultsPage() {
             context.lineTo(x + 0.5, mid + peak * amplitude)
           }
           context.stroke()
+
+          const hover = hoverPointRef.current
+          if (hover) {
+            context.strokeStyle = 'rgba(255, 255, 255, 0.75)'
+            context.lineWidth = 1
+            context.beginPath()
+            context.moveTo(hover.x + 0.5, 0)
+            context.lineTo(hover.x + 0.5, rect.height)
+            context.stroke()
+            context.fillStyle = getComputedStyle(canvas).getPropertyValue('--waveform-color').trim() || '#8b5cf6'
+            context.beginPath()
+            context.arc(hover.x, mid - hover.amplitude * amplitude, 3, 0, Math.PI * 2)
+            context.fill()
+          }
         }
 
+        redrawWaveformRef.current = draw
         draw()
         window.addEventListener('resize', draw)
-        return () => window.removeEventListener('resize', draw)
+        return () => {
+          window.removeEventListener('resize', draw)
+          redrawWaveformRef.current = null
+          waveformBufferRef.current = null
+          hoverPointRef.current = null
+        }
       } catch (error) {
         if (!cancelled) setError(error instanceof Error ? error.message : 'Unable to draw waveform')
       }
@@ -123,6 +148,28 @@ export function ExperimentResultsPage() {
       cleanup?.()
     }
   }, [activeAudio, activeTab, audioSources])
+
+  const handleWaveformMove = (event: MouseEvent<HTMLCanvasElement>) => {
+    const canvas = event.currentTarget
+    const rect = canvas.getBoundingClientRect()
+    const buffer = waveformBufferRef.current
+    if (!buffer || rect.width <= 0) return
+
+    const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left))
+    const time = (x / rect.width) * buffer.duration
+    const sampleIndex = Math.min(buffer.length - 1, Math.floor((time / buffer.duration) * buffer.length))
+    const amplitude = buffer.getChannelData(0)[sampleIndex] || 0
+    const point = { x, time, amplitude }
+    hoverPointRef.current = point
+    setWaveformHover(point)
+    redrawWaveformRef.current?.()
+  }
+
+  const clearWaveformHover = () => {
+    hoverPointRef.current = null
+    setWaveformHover(null)
+    redrawWaveformRef.current?.()
+  }
 
   const switchAudio = (type: 'reconstructed' | 'corrupted' | 'clean') => {
     Object.entries(audioElementsRef.current).forEach(([key, element]) => {
@@ -390,11 +437,29 @@ export function ExperimentResultsPage() {
                     id="result-waveform"
                     aria-label={`${activeAudio} audio waveform`}
                     className="w-full h-full"
+                    onMouseMove={handleWaveformMove}
+                    onMouseLeave={clearWaveformHover}
                     style={{
                       '--waveform-background': 'var(--bg)',
                       '--waveform-color': activeAudio === 'reconstructed' ? 'var(--recon)' : activeAudio === 'clean' ? 'var(--missing)' : 'var(--danger)',
                     } as CSSProperties}
                   />
+                  {waveformHover && (
+                    <div
+                      className="pointer-events-none absolute top-2 z-10 rounded-md border border-[var(--border)] bg-[var(--surface)]/95 px-2.5 py-1.5 text-xs shadow-lg"
+                      style={{
+                        left: `clamp(70px, ${waveformHover.x}px, calc(100% - 70px))`,
+                        transform: 'translateX(-50%)',
+                      }}
+                    >
+                      <div className="font-mono text-[var(--fg)]">
+                        {waveformHover.time.toFixed(3)} s
+                      </div>
+                      <div className="font-mono text-[var(--fg-muted)]">
+                        Amplitude: {waveformHover.amplitude.toFixed(4)}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
