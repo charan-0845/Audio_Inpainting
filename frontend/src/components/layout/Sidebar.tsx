@@ -31,7 +31,7 @@ const landingNavigation = [
   { path: '/research', label: 'About Research', icon: BookOpen },
   { path: '/research/methodology', label: 'Methodology', icon: GitBranch },
   { path: '/documentation', label: 'Documentation', icon: Code },
-  { path: '/workspace/new', label: 'Launch Workspace', icon: Zap },
+  { path: '/dashboard', label: 'Launch Workspace', icon: Zap },
 ]
 
 interface SidebarProps {
@@ -128,7 +128,9 @@ export function Sidebar({ isLanding = false }: SidebarProps) {
         <div className="flex flex-col h-full">
           <div className="flex items-center justify-between h-14 px-4 border-b border-[var(--border)]">
             {!collapsed && (
-              <span className="font-semibold text-[var(--fg)] truncate">DPAI Platform</span>
+              <Link to="/dashboard" className="font-semibold text-[var(--fg)] truncate hover:text-[var(--primary)]">
+                DPAI Platform
+              </Link>
             )}
             <Tooltip content={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} side="right">
               <Button

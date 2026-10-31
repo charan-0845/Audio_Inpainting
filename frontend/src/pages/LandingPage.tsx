@@ -135,7 +135,7 @@ export function LandingPage() {
               Interactively reconstruct missing audio regions with clip-specific optimization.
             </p>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-              <Link to="/workspace/new">
+              <Link to="/dashboard">
                 <Button size="lg" className="gap-2" aria-label="Launch interactive workspace">
                   <Zap className="h-5 w-5" />
                   Launch Workspace
@@ -242,7 +242,7 @@ export function LandingPage() {
                 <p className="text-[var(--fg-muted)] mb-4">
                   Run <code className="bg-[var(--raised)] px-2 py-1 rounded font-mono text-sm">python scripts/precompute_examples.py</code> to generate demo assets.
                 </p>
-                <Link to="/workspace/new">
+                <Link to="/dashboard">
                   <Button variant="primary" className="gap-2">
                     <Zap className="h-4 w-4" /> Try Live Workspace Instead
                   </Button>

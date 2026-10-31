@@ -57,7 +57,7 @@ export function Topbar({ title, subtitle, children, showBackLink = false, backHr
 
           <div className="flex items-center gap-3 flex-shrink-0">
             {isLanding && (
-              <Link to="/workspace/new" className="hidden sm:inline-flex">
+              <Link to="/dashboard" className="hidden sm:inline-flex">
                 <Button variant="primary" size="sm">
                   <Zap className="h-4 w-4 mr-1" />
                   Launch Workspace
