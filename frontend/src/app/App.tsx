@@ -11,6 +11,7 @@ const ExperimentResultsPage = lazy(() => import('@/pages/ExperimentResultsPage')
 const CompareExperimentsPage = lazy(() => import('@/pages/CompareExperimentsPage').then(m => ({ default: m.CompareExperimentsPage })))
 const ResearchPage = lazy(() => import('@/pages/ResearchPage').then(m => ({ default: m.ResearchPage })))
 const MethodologyPage = lazy(() => import('@/pages/MethodologyPage').then(m => ({ default: m.MethodologyPage })))
+const DocumentationPage = lazy(() => import('@/pages/DocumentationPage').then(m => ({ default: m.DocumentationPage })))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then(m => ({ default: m.SettingsPage })))
 
 function PageWrapper({ children }: { children: React.ReactNode }) {
@@ -32,6 +33,7 @@ export function App() {
       <Route path="/experiments/compare" element={<Layout><PageWrapper><CompareExperimentsPage /></PageWrapper></Layout>} />
       <Route path="/research" element={<Layout isLanding><PageWrapper><ResearchPage /></PageWrapper></Layout>} />
       <Route path="/research/methodology" element={<Layout isLanding><PageWrapper><MethodologyPage /></PageWrapper></Layout>} />
+      <Route path="/documentation" element={<Layout isLanding><PageWrapper><DocumentationPage /></PageWrapper></Layout>} />
       <Route path="/settings" element={<Layout><PageWrapper><SettingsPage /></PageWrapper></Layout>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

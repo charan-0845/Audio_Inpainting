@@ -30,7 +30,7 @@ const landingNavigation = [
   { path: '/', label: 'Home', icon: LayoutDashboard },
   { path: '/research', label: 'About Research', icon: BookOpen },
   { path: '/research/methodology', label: 'Methodology', icon: GitBranch },
-  { path: '/research', label: 'Documentation', icon: Code },
+  { path: '/documentation', label: 'Documentation', icon: Code },
   { path: '/workspace/new', label: 'Launch Workspace', icon: Zap },
 ]
 
