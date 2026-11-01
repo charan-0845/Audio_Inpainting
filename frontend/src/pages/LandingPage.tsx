@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Zap, BookOpen, GitBranch, Code, Play, Pause, Volume2, VolumeX, ChevronRight, Check, X, Music, Mic, Cpu } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
@@ -13,7 +13,7 @@ interface PrecomputedExample {
   id: string
   title: string
   clip_id: string
-  type: 'piano' | 'speech' | 'synthetic'
+  type: 'piano' | 'speech' | 'synthetic' | 'audio'
   gap_ms: number
   epochs: number
   seed: number
@@ -35,7 +35,7 @@ export function LandingPage() {
   const [loading, setLoading] = useState(true)
   const [activeDemo, setActiveDemo] = useState<string | null>(null)
   const [playingDemo, setPlayingDemo] = useState<string | null>(null)
-  const [audioElements, setAudioElements] = useState<Record<string, HTMLAudioElement>>({})
+  const audioElements = useRef<Record<string, HTMLAudioElement>>({})
 
   const features = [
     {
@@ -86,11 +86,11 @@ export function LandingPage() {
 
   const handlePlay = (demoId: string, audioType: 'reconstructed' | 'corrupted' | 'clean') => {
     const key = `${demoId}-${audioType}`
-    const audio = audioElements[key]
+    const audio = audioElements.current[key]
     if (!audio) return
 
     // Stop any currently playing
-    Object.values(audioElements).forEach(a => { a.pause(); a.currentTime = 0 })
+    Object.values(audioElements.current).forEach(a => { a.pause(); a.currentTime = 0 })
     setPlayingDemo(null)
 
     if (playingDemo === key) {
@@ -103,7 +103,7 @@ export function LandingPage() {
 
   const handlePause = (demoId: string, audioType: 'reconstructed' | 'corrupted' | 'clean') => {
     const key = `${demoId}-${audioType}`
-    const audio = audioElements[key]
+    const audio = audioElements.current[key]
     if (audio) {
       audio.pause()
       setPlayingDemo(null)
@@ -210,7 +210,7 @@ export function LandingPage() {
             <h2 className="text-3xl sm:text-4xl font-bold text-[var(--fg)] mb-4">Precomputed Demos</h2>
             <p className="text-[var(--fg-muted)] max-w-2xl mx-auto mb-8">
               Explore precomputed reconstructions without waiting for optimization. 
-              These examples use the Fast preset (10 epochs) for quick demonstration.
+              These examples are complete 5000-epoch MultiResUNet reconstructions.
             </p>
             <Badge variant="outline" className="text-sm">
               <span className="relative flex h-2 w-2 mr-2">
@@ -254,7 +254,12 @@ export function LandingPage() {
               {/* Interactive Demo Explorer */}
               <div className="mb-12">
                 <h3 className="text-xl font-semibold text-[var(--fg)] mb-6">Interactive Demo Explorer</h3>
-                <Tabs defaultValue={examples[0]?.id || ''} onValueChange={(v) => setActiveDemo(v as string | null)} className="w-full">
+                <Tabs
+                  value={activeDemo || examples[0]?.id || ''}
+                  defaultValue={examples[0]?.id || ''}
+                  onValueChange={(v) => setActiveDemo(v as string)}
+                  className="w-full"
+                >
                   <TabsList className="grid w-full grid-cols-3 gap-2">
                     {examples.map(ex => (
                       <TabsTrigger key={ex.id} value={ex.id} className="py-3">
@@ -279,7 +284,7 @@ export function LandingPage() {
                               </CardTitle>
                             </CardHeader>
                             <CardContent>
-                              <img src={`/${ex.spec_corrupted_url}`} alt="Corrupted spectrogram" className="w-full rounded-md border border-[var(--border)]" />
+                              <img src={`/${ex.spec_corrupted_url}`} alt="Corrupted spectrogram" className="w-full h-48 object-contain rounded-md border border-[var(--border)]" />
                             </CardContent>
                           </Card>
 
@@ -291,23 +296,10 @@ export function LandingPage() {
                               </CardTitle>
                             </CardHeader>
                             <CardContent>
-                              <img src={`/${ex.spectrogram_url}`} alt="Reconstructed spectrogram" className="w-full rounded-md border border-[var(--border)]" />
+                              <img src={`/${ex.spectrogram_url}`} alt="Reconstructed spectrogram" className="w-full h-48 object-contain rounded-md border border-[var(--border)]" />
                             </CardContent>
                           </Card>
 
-                          {ex.clean_url && (
-                            <Card variant="elevated">
-                              <CardHeader className="pb-2">
-                                <CardTitle className="text-base flex items-center gap-2">
-                                  <Mic className="h-4 w-4 text-[var(--missing)]" />
-                                  Clean Reference
-                                </CardTitle>
-                              </CardHeader>
-                              <CardContent>
-                                <img src={`/${ex.clean_url.replace('clean.wav', 'spec_clean.png')}`} alt="Clean spectrogram" className="w-full rounded-md border border-[var(--border)]" />
-                              </CardContent>
-                            </Card>
-                          )}
                         </div>
 
                         {/* Audio Players & Metrics */}
@@ -329,7 +321,9 @@ export function LandingPage() {
                                     <span className="ml-auto text-xs text-[var(--fg-muted)] font-mono">16-bit PCM WAV</span>
                                   </div>
                                   <audio
-                                    ref={el => { if (el) { setAudioElements(prev => ({ ...prev, [`${ex.id}-${key}`]: el })) }} }
+                                    ref={el => {
+                                      if (el) audioElements.current[`${ex.id}-${key}`] = el
+                                    }}
                                     src={`/${url}`}
                                     onPlay={() => setPlayingDemo(`${ex.id}-${key}`)}
                                     onPause={() => setPlayingDemo(null)}
