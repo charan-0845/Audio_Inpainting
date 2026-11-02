@@ -1,5 +1,5 @@
 import { ReactNode } from 'react'
-import { Link, NavLink, useLocation } from 'react-router-dom'
+import { Link, NavLink } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Tooltip } from '@/components/ui/Tooltip'
@@ -14,13 +14,12 @@ interface TopbarProps {
   children?: ReactNode
   showBackLink?: boolean
   backHref?: string
+  isLanding?: boolean
 }
 
-export function Topbar({ title, subtitle, children, showBackLink = false, backHref = '/' }: TopbarProps) {
-  const location = useLocation()
-  const { theme, resolvedTheme, setTheme } = useTheme()
+export function Topbar({ title, subtitle, children, showBackLink = false, backHref = '/', isLanding = false }: TopbarProps) {
+  const { resolvedTheme, setTheme } = useTheme()
   const { isConnected, health, activeProfile, backendUrl } = useBackend()
-  const isLanding = location.pathname === '/'
 
   return (
     <header

@@ -14,7 +14,7 @@ export function Layout({ children, isLanding = false }: LayoutProps) {
     <div className="min-h-screen bg-[var(--bg)]">
       <Sidebar isLanding={isLanding} />
       <div className={cn('transition-all duration-200', isLanding ? 'lg:pl-0' : 'lg:pl-64')}>
-        <Topbar />
+        <Topbar isLanding={isLanding} />
         <main className="min-h-[calc(100vh-4rem)]" id="main-content" role="main">
           {children}
           <Outlet />
