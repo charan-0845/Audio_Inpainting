@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DPAI Audio Inpainter // Workbench</title>
+  <meta name="description" content="Audio inpainting using Deep Prior and Multi-Resolution Harmonic CNNs (TASLP 2024)">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="animations.css">
+</head>
+<body>
+  <div class="workbench-layout">
+
+    <!-- TOP INSTRUMENT STATUS BAR -->
+    <header class="rack-header">
+      <div class="rack-header-brand">
+        <div class="brand-badge">DPAI</div>
+        <div class="brand-titles">
+          <h1 class="brand-name">DPAI Audio Inpainter // WORKBENCH</h1>
+          <span class="brand-meta">TASLP 2024 • MULTI-RESOLUTION HARMONIC CNN DEEP PRIOR</span>
+        </div>
+      </div>
+
+      <div class="rack-header-center">
+        <div class="session-stat">
+          <span class="stat-label">SESSION</span>
+          <span id="clip-name-display" class="stat-value">NO SIGNAL LOADED</span>
+        </div>
+        <div class="session-divider"></div>
+        <div class="session-stat">
+          <span class="stat-label">FORMAT</span>
+          <span id="clip-dur-display" class="stat-value">-- kHz • -- s</span>
+        </div>
+      </div>
+
+      <div class="rack-header-right">
+        <div class="nav-toggle-group">
+          <button id="tab-btn-studio" class="tab-toggle active" type="button">WORKBENCH</button>
+          <button id="tab-btn-gallery" class="tab-toggle" type="button">BENCHMARKS</button>
+        </div>
+        <div id="server-badge" class="device-pill live-indicator">
+          <span class="device-dot"></span>
+          <span id="server-status-text">CONNECTING</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- MAIN VIEWPORT -->
+    <main class="workbench-body">
+
+      <!-- ================= STUDIO / WORKBENCH SECTION ================= -->
+      <section id="section-studio" class="studio-section active">
+        <div class="canvas-inspector-grid">
+
+          <!-- LEFT: FULL-WIDTH SYNCHRONIZED TIMELINE CANVAS -->
+          <div class="timeline-rack">
+
+            <!-- INGESTION STRIP (Upload & Presets) -->
+            <div class="ingest-strip">
+              <div id="drop-zone" class="drop-zone-compact" tabindex="0" role="button" aria-label="Upload audio file">
+                <input type="file" id="audio-input" accept="audio/*,.wav,.mp3,.flac,.ogg" class="hidden-input">
+                <svg class="rack-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                </svg>
+                <span class="drop-text">LOAD SIGNAL (DROP WAV/MP3 OR CLICK)</span>
+              </div>
+
+              <div class="synth-triggers">
+                <span class="mini-label">SYNTH:</span>
+                <button type="button" id="btn-synthetic" class="btn-rack-mini">440Hz SINE</button>
+                <button type="button" id="btn-piano-sample" class="btn-rack-mini">PIANO C4</button>
+              </div>
+
+              <div class="reference-slot">
+                <label for="reference-input" class="ref-button-wrapper" title="Attach clean ground truth audio for NMSE/PESQ evaluation">
+                  <span class="mini-label">REF AUDIO:</span>
+                  <span id="ref-status" class="ref-badge">NONE</span>
+                  <input type="file" id="reference-input" accept="audio/*" class="hidden-input">
+                </label>
+              </div>
+            </div>
+
+            <!-- TIMELINE EDITOR CANVAS CONTAINER -->
+            <div id="waveform-container" class="timeline-scope">
+
+              <!-- SCOPE CONTROLS & TIMELINE STATS -->
+              <div class="scope-toolbar">
+                <div class="toolbar-left">
+                  <span class="panel-section-title">TIMELINE // WAVEFORM & CORRUPTED GAPS</span>
+                  <button type="button" id="btn-play-preview" class="btn-rack-tool" title="Preview audio with gaps silenced (Space)">
+                    <svg id="play-icon" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                      <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                    <span id="play-btn-text">PREVIEW</span>
+                  </button>
+                  <button type="button" id="btn-random-gaps" class="btn-rack-tool">RANDOM GAP</button>
+                  <button type="button" id="btn-detect-gaps" class="btn-rack-tool">AUTO-DETECT SILENCE</button>
+                  <button type="button" id="btn-clear-gaps" class="btn-rack-tool text-danger">CLEAR</button>
+                </div>
+                <div class="toolbar-right">
+                  <span class="mini-label">MASKED:</span>
+                  <span id="stat-missing-ms" class="mono-value">0 ms</span>
+                  <span class="mono-divider">/</span>
+                  <span id="stat-missing-pct" class="mono-value">0.0%</span>
+                  <span class="limit-caption">(MAX 40%)</span>
+                </div>
+              </div>
+
+              <!-- DUAL INTERACTIVE CANVAS AREA -->
+              <div class="canvas-viewport reveal-on-scroll">
+                <!-- Primary Waveform Canvas -->
+                <div class="waveform-canvas-box">
+                  <canvas id="waveform-canvas" width="1024" height="136"></canvas>
+                  <div id="drag-overlay" class="drag-cue-overlay">CLICK & DRAG HORIZONTALLY TO MARK GAP INTERVAL</div>
+                </div>
+
+                <!-- Synchronized Spectrogram Track -->
+                <div class="spectrogram-track reveal-on-scroll">
+                  <div class="track-header">
+                    <span class="track-label">SYNCHRONIZED SPECTROGRAM // MAGMA FFT</span>
+                    <span id="spectrogram-state-tag" class="track-status">CORRUPTED INPUT</span>
+                  </div>
+
+                  <div class="spectrogram-screen">
+                    <!-- Live Optimization Spectrogram Image -->
+                    <img id="live-spec-img" alt="Spectrogram Scope View" class="spec-canvas-img">
+                    <div id="spec-placeholder-text" class="screen-placeholder">
+                      LOAD SIGNAL AND MARK GAPS TO INITIALIZE SPECTRAL SCOPE
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- GAP CHIPS & VALIDATION BAR -->
+              <div class="gap-interval-strip">
+                <span class="mini-label">GAPS:</span>
+                <div id="gaps-list" class="gaps-list"></div>
+              </div>
+
+              <div id="validation-box" class="rack-alert hidden">
+                <span class="alert-icon">!</span>
+                <span id="validation-msg">Gap exceeds maximum allowed budget.</span>
+              </div>
+
+            </div>
+
+            <!-- DOCKED TRANSPORT & COMPARISON DECK -->
+            <div id="results-section" class="docked-transport-deck hidden reveal-on-scroll">
+              <div class="transport-header">
+                <div class="transport-title-group">
+                  <span class="panel-section-title">A/B MASTER BUS & RESTORATION MONITOR</span>
+                  <span class="run-id-pill">RUN <span id="result-run-id">--</span></span>
+                </div>
+                <div class="transport-actions">
+                  <a id="btn-download-wav" href="#" download="reconstruction.wav" class="btn-rack-download">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                    </svg>
+                    EXPORT RECONSTRUCTION (.WAV)
+                  </a>
+                </div>
+              </div>
+
+              <!-- A/B Solo Switcher Bar -->
+              <div class="ab-control-strip">
+                <div class="ab-button-group">
+                  <span class="mini-label">MONITOR BUS:</span>
+                  <button type="button" id="btn-ab-reconstructed" class="btn-ab-toggle active">
+                    <span class="key-badge">1</span> RECONSTRUCTED
+                  </button>
+                  <button type="button" id="btn-ab-corrupted" class="btn-ab-toggle">
+                    <span class="key-badge">2</span> CORRUPTED
+                  </button>
+                  <button type="button" id="btn-ab-clean" class="btn-ab-toggle hidden">
+                    <span class="key-badge">3</span> CLEAN REFERENCE
+                  </button>
+                </div>
+                <div class="playback-mount">
+                  <audio id="audio-playback" controls class="native-player-docked"></audio>
+                </div>
+              </div>
+
+              <!-- Triple Spectrogram Comparison Strip -->
+              <div class="spec-comparison-deck reveal-stagger">
+                <div class="spec-tile">
+                  <div class="tile-bar">CORRUPTED INPUT</div>
+                  <div class="tile-img-box">
+                    <img id="img-spec-corrupted" alt="Corrupted Spectrogram">
+                  </div>
+                </div>
+                <div class="spec-tile">
+                  <div class="tile-bar">RECONSTRUCTED (DPAI)</div>
+                  <div class="tile-img-box">
+                    <img id="img-spec-reconstructed" alt="Reconstructed Spectrogram">
+                  </div>
+                </div>
+                <div id="col-spec-clean" class="spec-tile hidden">
+                  <div class="tile-bar">CLEAN REFERENCE</div>
+                  <div class="tile-img-box">
+                    <img id="img-spec-clean" alt="Clean Reference Spectrogram">
+                  </div>
+                </div>
+              </div>
+
+              <!-- Optimization Loss Curve Box -->
+              <div class="loss-curve-deck">
+                <div class="tile-bar">FULL RUN CONVERGENCE (LOSS HISTORY)</div>
+                <div class="loss-curve-box">
+                  <img id="img-loss-curve" alt="Full Optimization Loss Curve">
+                </div>
+              </div>
+
+              <!-- Lab Note -->
+              <div class="lab-instrument-note">
+                <span class="note-tag">NOTE // DEEP IMAGE PRIOR METHODOLOGY</span>
+                Performs clip-specific optimization without external corpus pre-training. Excels on stationary harmonic components and intervals ≤ 100 ms. Quality degrades on extended gaps (>100 ms) or complex non-stationary transients.
+              </div>
+            </div>
+
+          </div>
+
+          <!-- RIGHT: DOCKED INSPECTOR & PARAMETER RACK -->
+          <aside class="inspector-dock reveal-stagger">
+
+            <!-- PARAMETERS SECTION -->
+            <div class="dock-panel">
+              <div class="dock-panel-header">
+                <span class="panel-section-title">INSPECTOR // PARAMETERS</span>
+              </div>
+
+              <!-- Preset Select Matrix -->
+              <div class="param-row">
+                <label class="param-label">OPTIMIZATION PRESET</label>
+                <div class="preset-segmented-grid">
+                  <label class="preset-choice">
+                    <input type="radio" name="preset" value="lpc" id="preset-lpc">
+                    <span class="preset-title">LPC</span>
+                    <span class="preset-sub">Instant</span>
+                  </label>
+                  <label class="preset-choice selected">
+                    <input type="radio" name="preset" value="fast" id="preset-fast" checked>
+                    <span class="preset-title">FAST</span>
+                    <span class="preset-sub">100 ep • 4 ch</span>
+                  </label>
+                  <label class="preset-choice">
+                    <input type="radio" name="preset" value="balanced" id="preset-balanced">
+                    <span class="preset-title">BALANCED</span>
+                    <span class="preset-sub">300 ep • 16 ch</span>
+                  </label>
+                  <label class="preset-choice">
+                    <input type="radio" name="preset" value="paper" id="preset-paper">
+                    <span class="preset-title">PAPER</span>
+                    <span class="preset-sub">Full HarmUNet</span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- Epochs & Seed Inputs -->
+              <div class="param-grid-2">
+                <div class="param-item">
+                  <label class="param-label" for="epochs-override">EPOCHS OVERRIDE</label>
+                  <input type="number" id="epochs-override" placeholder="Preset def" min="1" max="10000" class="input-rack-mono">
+                </div>
+                <div class="param-item">
+                  <label class="param-label" for="seed-input">SEED</label>
+                  <input type="number" id="seed-input" value="0" min="0" max="999999" class="input-rack-mono">
+                </div>
+              </div>
+
+              <!-- Checkbox: Preserve Observed Samples -->
+              <div class="param-checkbox-row">
+                <label class="checkbox-container" for="check-preserve-observed">
+                  <input type="checkbox" id="check-preserve-observed" checked>
+                  <span class="checkbox-custom"></span>
+                  <div class="checkbox-label-block">
+                    <span class="checkbox-title">PASTE OBSERVED SAMPLES</span>
+                    <span class="checkbox-desc">Bit-exact original waveform outside gap zones</span>
+                  </div>
+                </label>
+              </div>
+
+              <!-- Action Bar (Run / Cancel) -->
+              <div class="action-dock-bar">
+                <button type="button" id="btn-run" class="btn-primary-recon" disabled>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                  </svg>
+                  <span>EXECUTE INPAINT</span>
+                </button>
+                <button type="button" id="btn-cancel" class="btn-danger-rack hidden">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>
+                  </svg>
+                  <span>ABORT</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- LIVE TELEMETRY & CONVERGENCE MONITOR -->
+            <div id="progress-container" class="dock-panel progress-dock-panel hidden">
+              <div class="dock-panel-header">
+                <span class="panel-section-title">TELEMETRY // OPTIMIZER</span>
+                <span id="progress-status-badge" class="telemetry-badge">RUNNING</span>
+              </div>
+
+              <div class="progress-stats-row">
+                <div class="stat-pair">
+                  <span class="param-label">ITERATION</span>
+                  <span id="progress-epoch-counter" class="mono-telemetry-num">0 / 300</span>
+                </div>
+                <div class="stat-pair text-right">
+                  <span class="param-label">TIME REMAINING</span>
+                  <span id="progress-eta-text" class="mono-telemetry-num">--</span>
+                </div>
+              </div>
+
+              <!-- 2px Progress Bar in --recon -->
+              <div class="progress-track-thin">
+                <div id="progress-bar-fill" class="progress-fill-recon" style="width: 0%"></div>
+              </div>
+
+              <!-- Realtime Loss Sparkline Canvas -->
+              <div class="live-loss-block">
+                <div class="loss-scope-header">
+                  <span class="param-label">MSE LOSS OSCILLOSCOPE</span>
+                  <span id="current-loss-text" class="loss-numeric-readout">loss: --</span>
+                </div>
+                <canvas id="loss-canvas" width="280" height="96" class="loss-canvas-screen"></canvas>
+              </div>
+            </div>
+
+            <!-- METRICS PANEL -->
+            <div id="metrics-panel" class="dock-panel metrics-dock-panel">
+              <div class="dock-panel-header">
+                <span class="panel-section-title">DIAGNOSTICS & METRICS</span>
+              </div>
+
+              <div class="metrics-tabular-grid">
+                <div class="metric-block">
+                  <span class="param-label">RUNTIME</span>
+                  <span id="metric-runtime" class="metric-num">-- s</span>
+                </div>
+                <div class="metric-block">
+                  <span class="param-label">EPOCHS</span>
+                  <span id="metric-epochs" class="metric-num">--</span>
+                </div>
+                <div class="metric-block">
+                  <span class="param-label">PARAMETERS</span>
+                  <span id="metric-params" class="metric-num">--</span>
+                </div>
+                <div id="metric-card-nmse" class="metric-block highlight hidden">
+                  <span class="param-label">NMSE (OVERALL)</span>
+                  <span id="metric-nmse-tot" class="metric-num text-recon">-- dB</span>
+                </div>
+                <div id="metric-card-miss" class="metric-block highlight hidden">
+                  <span class="param-label">NMSE (GAP REGION)</span>
+                  <span id="metric-nmse-miss" class="metric-num text-recon">-- dB</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- SHORTCUTS CHEAT SHEET -->
+            <div class="dock-panel shortcuts-panel">
+              <div class="dock-panel-header">
+                <span class="panel-section-title">KEYBOARD SHORTCUTS</span>
+              </div>
+              <div class="shortcuts-list">
+                <div class="shortcut-row">
+                  <span class="kbd-key">Space</span>
+                  <span class="kbd-desc">Play / Pause Preview</span>
+                </div>
+                <div class="shortcut-row">
+                  <span class="kbd-key">1</span>
+                  <span class="kbd-desc">Solo Inpainted</span>
+                </div>
+                <div class="shortcut-row">
+                  <span class="kbd-key">2</span>
+                  <span class="kbd-desc">Solo Corrupted</span>
+                </div>
+                <div class="shortcut-row">
+                  <span class="kbd-key">3</span>
+                  <span class="kbd-desc">Solo Clean Reference</span>
+                </div>
+              </div>
+            </div>
+
+          </aside>
+        </div>
+      </section>
+
+      <!-- ================= GALLERY TAB ================= -->
+      <section id="section-gallery" class="gallery-section">
+        <div class="gallery-rack-container reveal-on-scroll">
+          <div class="gallery-rack-header reveal-on-scroll">
+            <div>
+              <span class="panel-section-title">PRECOMPUTED BENCHMARK EXAMPLES</span>
+              <p class="rack-desc">Verified inpainting results produced with MultiResUNet on TASLP test audio clips without local compute wait.</p>
+            </div>
+          </div>
+          <div id="gallery-grid" class="benchmark-grid reveal-stagger">
+            <div class="rack-loader">SCANNING EXAMPLES DATABASE...</div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- STATUS FOOTER -->
+    <footer class="rack-footer">
+      <div class="footer-left">
+        <span class="mono-foot">DPAI INSTRUMENT // MULTI-RESOLUTION HARMONIC CNN</span>
+      </div>
+      <div class="footer-right">
+        <span class="mono-foot">IEEE/ACM TASLP 2024 • MIOTELLO ET AL.</span>
+      </div>
+    </footer>
+
+  </div>
+
+  <script src="animations.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

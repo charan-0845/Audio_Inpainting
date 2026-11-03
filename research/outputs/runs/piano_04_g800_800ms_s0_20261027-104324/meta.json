@@ -1,0 +1,12 @@
+{
+  "run_id": "piano_04_g800_800ms_s0_20261027-104324",
+  "clip_id": "piano_04_g800",
+  "gap_ms": 800.0,
+  "seed": 0,
+  "epochs": 10,
+  "n_params": 6998,
+  "runtime_s": 14.53,
+  "device": "cpu",
+  "torch_version": "2.10.0+cpu",
+  "git_hash": "12466c6"
+}

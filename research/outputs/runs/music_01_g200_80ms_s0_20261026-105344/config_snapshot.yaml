@@ -1,0 +1,57 @@
+audio:
+  duration_seconds: 5
+  mono: true
+  sample_rate: 16000
+corruption:
+  cumulative_gap_ms: 200
+  max_gap_ms: 80
+  min_gap_ms: 40
+loss:
+  alpha_mse: 1.0
+  alpha_mss: 0.1
+  use_mss: true
+model:
+  alpha: 1.6
+  base_filters: 4
+  channel_schedule:
+  - 4
+  - 4
+  - 4
+  - 4
+  - 4
+  harmonic_anchors:
+    downsample.conv1: 1
+    multires.conv1: 1
+    multires.conv2: 2
+    multires.conv3: 3
+    multires.residual: 1
+    respath.conv1: 1
+    respath.residual: 1
+  input_channels: 2
+  name: multiresunet
+  negative_slope: 0.01
+  norm: batch
+  output_channels: 2
+  res_path_lengths:
+  - 4
+  - 3
+  - 2
+  - 1
+  use_harmonic: false
+optimization:
+  epochs: 300
+  learning_rate: 0.01
+  noise_variance: 0.1
+  optimizer: Adam
+  perturbation_variance: 0.03
+pipeline:
+  log_every: 50
+  preserve_observed: true
+  save_checkpoint: false
+  variant: multires_harmonic
+run:
+  out_dir: outputs/runs
+stft:
+  hop_length: 120
+  n_fft: 1024
+  win_length: 600

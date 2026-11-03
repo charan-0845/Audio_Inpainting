@@ -1,0 +1,699 @@
+/* ==========================================================================
+   DPAI MOTION SYSTEM — Professional Animation Layer
+   Based on Emil Kowalski / Jhey Tompkins / Jakub Krehel techniques
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. EASING CURVES (Cubic-bezier presets for natural motion)
+   -------------------------------------------------------------------------- */
+:root {
+  /* Standard easings */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-circ: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-out-back: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-in-out-cubic: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-out-quad: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  
+  /* Timing scales */
+  --t-instant: 60ms;
+  --t-fast: 140ms;
+  --t-normal: 220ms;
+  --t-slow: 350ms;
+  --t-entrance: 450ms;
+  --t-entrance-stagger: 60ms;
+  
+  /* Reduced motion override */
+  --t-reduced: 0.01ms;
+}
+
+/* --------------------------------------------------------------------------
+   2. ENTRANCE ANIMATIONS
+   -------------------------------------------------------------------------- */
+
+/* Fade + slide up (primary entrance) */
+@keyframes entrance-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Fade + scale (for cards/modals) */
+@keyframes entrance-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Slide from right (sidebar/inspector) */
+@keyframes entrance-slide-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Reveal from left (header elements) */
+@keyframes entrance-reveal-left {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Clip-path reveal (for spectrogram/canvas areas) */
+@keyframes entrance-clip-reveal {
+  from {
+    opacity: 0;
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+/* Staggered list item entrance */
+@keyframes entrance-stagger-item {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Pulse ring (for recording/processing indicators) */
+@keyframes pulse-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  70% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+/* Shimmer (for loading states) */
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+/* --------------------------------------------------------------------------
+   3. APPLY ENTRANCE ANIMATIONS TO LAYOUT
+   -------------------------------------------------------------------------- */
+
+/* Header elements */
+.rack-header {
+  animation: entrance-reveal-left var(--t-entrance) var(--ease-out-expo);
+}
+
+.rack-header-brand {
+  animation: entrance-fade-up var(--t-entrance) var(--ease-out-expo);
+  animation-delay: calc(var(--t-entrance-stagger) * 1);
+  animation-fill-mode: both;
+}
+
+.rack-header-center {
+  animation: entrance-fade-up var(--t-entrance) var(--ease-out-expo);
+  animation-delay: calc(var(--t-entrance-stagger) * 2);
+  animation-fill-mode: both;
+}
+
+.rack-header-right {
+  animation: entrance-fade-up var(--t-entrance) var(--ease-out-expo);
+  animation-delay: calc(var(--t-entrance-stagger) * 3);
+  animation-fill-mode: both;
+}
+
+/* Main sections */
+.studio-section.active {
+  animation: entrance-fade-up var(--t-entrance) var(--ease-out-expo);
+}
+
+.gallery-section.active {
+  animation: entrance-fade-up var(--t-entrance) var(--ease-out-expo);
+}
+
+/* Timeline rack - slides in from left */
+.timeline-rack {
+  animation: entrance-fade-up var(--t-entrance) var(--ease-out-expo);
+  animation-delay: var(--t-entrance-stagger);
+  animation-fill-mode: both;
+}
+
+/* Ingest strip */
+.ingest-strip {
+  animation: entrance-fade-up var(--t-normal) var(--ease-out-expo);
+  animation-delay: calc(var(--t-entrance-stagger) * 2);
+  animation-fill-mode: both;
+}
+
+/* Timeline scope */
+.timeline-scope {
+  animation: entrance-clip-reveal var(--t-entrance) var(--ease-out-expo);
+  animation-delay: calc(var(--t-entrance-stagger) * 3);
+  animation-fill-mode: both;
+}
+
+/* Canvas viewport */
+.canvas-viewport {
+  animation: entrance-pop var(--t-normal) var(--ease-spring);
+  animation-delay: calc(var(--t-entrance-stagger) * 4);
+  animation-fill-mode: both;
+}
+
+/* Inspector dock - slides from right */
+.inspector-dock {
+  animation: entrance-slide-right var(--t-entrance) var(--ease-out-expo);
+  animation-delay: var(--t-entrance-stagger);
+  animation-fill-mode: both;
+}
+
+/* Dock panels - staggered */
+.dock-panel {
+  animation: entrance-fade-up var(--t-normal) var(--ease-out-expo);
+  animation-fill-mode: both;
+}
+
+.dock-panel:nth-child(1) { animation-delay: calc(var(--t-entrance-stagger) * 1); }
+.dock-panel:nth-child(2) { animation-delay: calc(var(--t-entrance-stagger) * 2); }
+.dock-panel:nth-child(3) { animation-delay: calc(var(--t-entrance-stagger) * 3); }
+.dock-panel:nth-child(4) { animation-delay: calc(var(--t-entrance-stagger) * 4); }
+
+/* Gallery cards - staggered grid entrance */
+.gallery-card {
+  animation: entrance-pop var(--t-normal) var(--ease-spring);
+  animation-fill-mode: both;
+}
+
+/* Progress container */
+#progress-container:not(.hidden) {
+  animation: entrance-fade-up var(--t-fast) var(--ease-spring);
+}
+
+/* Results section */
+#results-section:not(.hidden) {
+  animation: entrance-pop var(--t-normal) var(--ease-spring);
+}
+
+/* Validation box */
+#validation-box:not(.hidden) {
+  animation: entrance-fade-up var(--t-fast) var(--ease-spring);
+}
+
+/* --------------------------------------------------------------------------
+   4. MICRO-INTERACTIONS: BUTTON STATES
+   -------------------------------------------------------------------------- */
+
+/* Universal button press feedback */
+button:not(:disabled):active,
+.btn-rack-tool:not(:disabled):active,
+.btn-rack-mini:not(:disabled):active,
+.btn-ab-toggle:not(:disabled):active,
+.btn-primary-recon:not(:disabled):active,
+.btn-danger-rack:not(:disabled):active,
+.btn-rack-download:not(:disabled):active,
+.tab-toggle:not(:disabled):active,
+.preset-choice:not(:has(input:disabled)):active,
+.drop-zone-compact:active {
+  transform: scale(0.97);
+  transition: transform 80ms var(--ease-out-quad);
+}
+
+/* Button focus ring animation */
+button:focus-visible,
+input:focus-visible,
+[tabindex="0"]:focus-visible {
+  animation: focus-ring-pulse 1.5s var(--ease-out-expo) infinite;
+}
+
+@keyframes focus-ring-pulse {
+  0%, 100% { outline-color: var(--ring); outline-width: 2px; }
+  50% { outline-color: var(--ring); outline-width: 3px; }
+}
+
+/* Preset choice selection animation */
+.preset-choice {
+  position: relative;
+  overflow: hidden;
+}
+
+.preset-choice::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, transparent, rgba(255, 176, 32, 0.08));
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease-out-expo);
+}
+
+.preset-choice:hover::before {
+  opacity: 1;
+}
+
+.preset-choice.selected {
+  animation: preset-select-pop 300ms var(--ease-spring);
+}
+
+@keyframes preset-select-pop {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.02); }
+  60% { transform: scale(0.98); }
+  100% { transform: scale(1); }
+}
+
+/* AB toggle active state */
+.btn-ab-toggle.active {
+  animation: ab-toggle-activate 250ms var(--ease-spring);
+}
+
+@keyframes ab-toggle-activate {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 176, 32, 0.4); }
+  50% { transform: scale(1.03); box-shadow: 0 0 0 8px rgba(255, 176, 32, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 176, 32, 0); }
+}
+
+/* Primary button hover shine */
+.btn-primary-recon {
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-primary-recon::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.25), transparent);
+  transform: skewX(-20deg);
+  transition: left var(--t-slow) var(--ease-out-expo);
+}
+
+.btn-primary-recon:hover:not(:disabled)::after {
+  left: 100%;
+}
+
+/* Download button hover */
+.btn-rack-download:hover {
+  transform: translateY(-1px);
+  transition: transform var(--t-fast) var(--ease-out-quad), 
+              border-color var(--t-fast) var(--ease-out-quad),
+              color var(--t-fast) var(--ease-out-quad);
+}
+
+/* Drop zone enhanced */
+.drop-zone-compact {
+  position: relative;
+}
+
+.drop-zone-compact.dragover {
+  animation: drop-zone-pulse 400ms var(--ease-spring) infinite alternate;
+}
+
+@keyframes drop-zone-pulse {
+  from { 
+    border-color: var(--recon);
+    background-color: rgba(255, 176, 32, 0.05);
+  }
+  to { 
+    border-color: var(--missing);
+    background-color: rgba(61, 214, 198, 0.08);
+  }
+}
+
+/* Gap chip entrance */
+.gap-chip {
+  animation: entrance-pop var(--t-fast) var(--ease-spring);
+  animation-fill-mode: both;
+}
+
+/* Gap chip removal */
+.gap-chip.removing {
+  animation: gap-chip-remove 200ms var(--ease-in-out-cubic) forwards;
+}
+
+@keyframes gap-chip-remove {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.8) translateX(-10px); }
+}
+
+/* --------------------------------------------------------------------------
+   5. STATE TRANSITIONS
+   -------------------------------------------------------------------------- */
+
+/* Tab switching */
+.tab-toggle {
+  position: relative;
+}
+
+.tab-toggle::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  width: 0;
+  height: 2px;
+  background: var(--recon);
+  transform: translateX(-50%);
+  transition: width var(--t-normal) var(--ease-out-expo);
+}
+
+.tab-toggle.active::after {
+  width: 80%;
+}
+
+/* Section visibility */
+.studio-section,
+.gallery-section {
+  transition: opacity var(--t-fast) var(--ease-out-quad), 
+              visibility var(--t-fast);
+}
+
+.studio-section:not(.active),
+.gallery-section:not(.active) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.studio-section.active,
+.gallery-section.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Progress bar smooth fill */
+.progress-fill-recon {
+  transition: width 200ms var(--ease-out-expo);
+}
+
+/* Spectrogram image swap */
+.spec-canvas-img {
+  transition: opacity var(--t-normal) var(--ease-out-quad);
+}
+
+.spec-canvas-img.active {
+  opacity: 1;
+}
+
+/* Live spec placeholder */
+#spec-placeholder-text {
+  transition: opacity var(--t-fast) var(--ease-out-quad);
+}
+
+#spec-placeholder-text.hidden {
+  opacity: 0;
+}
+
+/* Metrics cards */
+.metric-block {
+  transition: transform var(--t-fast) var(--ease-out-quad),
+              border-color var(--t-fast) var(--ease-out-quad),
+              box-shadow var(--t-fast) var(--ease-out-quad);
+}
+
+.metric-block:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  border-color: var(--border-strong);
+}
+
+.metric-block.highlight:hover {
+  border-color: rgba(255, 176, 32, 0.5);
+  box-shadow: 0 4px 16px rgba(255, 176, 32, 0.15);
+}
+
+/* --------------------------------------------------------------------------
+   6. SCROLL-BASED REVEALS (IntersectionObserver targets)
+   -------------------------------------------------------------------------- */
+
+.reveal-on-scroll {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 600ms var(--ease-out-expo),
+              transform 600ms var(--ease-out-expo);
+}
+
+.reveal-on-scroll.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Staggered children */
+.reveal-stagger > * {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 500ms var(--ease-out-expo),
+              transform 500ms var(--ease-out-expo);
+}
+
+.reveal-stagger.is-visible > *:nth-child(1) { transition-delay: 0ms; }
+.reveal-stagger.is-visible > *:nth-child(2) { transition-delay: 80ms; }
+.reveal-stagger.is-visible > *:nth-child(3) { transition-delay: 160ms; }
+.reveal-stagger.is-visible > *:nth-child(4) { transition-delay: 240ms; }
+.reveal-stagger.is-visible > *:nth-child(5) { transition-delay: 320ms; }
+.reveal-stagger.is-visible > *:nth-child(6) { transition-delay: 400ms; }
+.reveal-stagger.is-visible > * {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* --------------------------------------------------------------------------
+   7. LOADING STATES & SKELETONS
+   -------------------------------------------------------------------------- */
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--raised) 25%,
+    rgba(255, 255, 255, 0.03) 50%,
+    var(--raised) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s var(--ease-in-out-cubic) infinite;
+  border-radius: var(--radius-xs);
+}
+
+.skeleton-text {
+  height: 1em;
+  width: 60%;
+  margin: 0.5em 0;
+}
+
+.skeleton-card {
+  height: 140px;
+  width: 100%;
+}
+
+/* Gallery card loading */
+.gallery-card.loading .img-frame {
+  background: var(--bg);
+}
+
+.gallery-card.loading .img-frame::after {
+  content: '';
+  display: block;
+  width: 100%;
+  height: 100%;
+  animation: shimmer 1.5s var(--ease-in-out-cubic) infinite;
+  background: linear-gradient(
+    90deg,
+    var(--bg) 25%,
+    rgba(255, 255, 255, 0.02) 50%,
+    var(--bg) 75%
+  );
+  background-size: 200% 100%;
+}
+
+/* --------------------------------------------------------------------------
+   8. TOOLTIP & HOVER REVEALS
+   -------------------------------------------------------------------------- */
+
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::before {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  padding: 4px 8px;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out-expo),
+              transform var(--t-fast) var(--ease-out-expo);
+  z-index: 100;
+}
+
+[data-tooltip]::after {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  border: 4px solid transparent;
+  border-top-color: var(--border);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out-expo),
+              transform var(--t-fast) var(--ease-out-expo);
+}
+
+[data-tooltip]:hover::before,
+[data-tooltip]:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* --------------------------------------------------------------------------
+   9. LIVE INDICATORS
+   -------------------------------------------------------------------------- */
+
+.live-indicator {
+  position: relative;
+}
+
+.live-indicator::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--missing);
+  animation: pulse-ring 2s var(--ease-out-quad) infinite;
+}
+
+/* Status badge pulse */
+.telemetry-badge:not([style*="color: #E5484D"]) {
+  animation: badge-pulse 3s var(--ease-out-quad) infinite;
+}
+
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* --------------------------------------------------------------------------
+   10. FORM INPUT ENHANCEMENTS
+   -------------------------------------------------------------------------- */
+
+.input-rack-mono {
+  transition: border-color var(--t-fast) var(--ease-out-quad),
+              box-shadow var(--t-fast) var(--ease-out-quad),
+              background-color var(--t-fast) var(--ease-out-quad);
+}
+
+.input-rack-mono:focus {
+  box-shadow: 0 0 0 3px rgba(255, 176, 32, 0.15);
+  background-color: var(--raised);
+}
+
+/* Checkbox animation */
+.checkbox-custom {
+  transition: background-color var(--t-fast) var(--ease-spring),
+              border-color var(--t-fast) var(--ease-spring),
+              transform 150ms var(--ease-spring);
+}
+
+.checkbox-container input:checked + .checkbox-custom {
+  animation: checkbox-check 250ms var(--ease-spring);
+}
+
+@keyframes checkbox-check {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.15); }
+  60% { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
+
+/* --------------------------------------------------------------------------
+   11. REDUCED MOTION SUPPORT
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: var(--t-reduced) !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: var(--t-reduced) !important;
+    transition-delay: 0ms !important;
+  }
+  
+  .reveal-on-scroll,
+  .reveal-stagger > * {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  
+  button:not(:disabled):active,
+  .btn-rack-tool:not(:disabled):active,
+  .btn-rack-mini:not(:disabled):active,
+  .btn-ab-toggle:not(:disabled):active,
+  .btn-primary-recon:not(:disabled):active,
+  .btn-danger-rack:not(:disabled):active {
+    transform: none;
+  }
+  
+  .preset-choice.selected {
+    animation: none;
+  }
+  
+  .btn-ab-toggle.active {
+    animation: none;
+  }
+  
+  .gap-chip {
+    animation: none;
+  }
+  
+  .skeleton {
+    animation: none;
+    background: var(--raised);
+  }
+  
+  .gallery-card.loading .img-frame::after {
+    animation: none;
+    background: var(--bg);
+  }
+}

@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+data/raw/*
+data/clean/*
+data/corrupted/*
+data/masks/*
+
+# Generated outputs
+outputs/audio/*
+outputs/spectrograms/*
+outputs/checkpoints/*
+outputs/runs/*
+!outputs/runs/synthetic_200ms_s0_20261008-101357/
+
+# Experiment artifacts
+experiments/**/runs/
+experiments/**/logs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env

@@ -1,0 +1,12 @@
+{
+  "run_id": "audio_original_286ms_s0_20261030-120737",
+  "clip_id": "audio_original",
+  "gap_ms": 286.0,
+  "seed": 0,
+  "epochs": 0,
+  "n_params": 0,
+  "runtime_s": 0.11,
+  "device": "cpu",
+  "torch_version": "2.10.0+cpu",
+  "git_hash": "567caaa"
+}

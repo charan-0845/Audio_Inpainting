@@ -1,0 +1,12 @@
+{
+  "run_id": "music_01_g400_398ms_s0_20261029-094957",
+  "clip_id": "music_01_g400",
+  "gap_ms": 398.0,
+  "seed": 0,
+  "epochs": 5,
+  "n_params": 6998,
+  "runtime_s": 15.44,
+  "device": "cpu",
+  "torch_version": "2.10.0+cpu",
+  "git_hash": "e1e94bc"
+}

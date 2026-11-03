@@ -1,0 +1,12 @@
+{
+  "run_id": "test_50ms_s42_20261029-223228",
+  "clip_id": "test",
+  "gap_ms": 50.0,
+  "seed": 42,
+  "epochs": 0,
+  "n_params": 0,
+  "runtime_s": 0.01,
+  "device": "cpu",
+  "torch_version": "2.10.0+cpu",
+  "git_hash": "567caaa"
+}
