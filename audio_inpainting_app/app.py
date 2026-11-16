@@ -565,6 +565,8 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="Additional YAML config to merge.")
     p_serve.add_argument("--max_seconds", type=float, default=10.0,
                          help="Maximum audio duration allowed in seconds.")
+    p_serve.add_argument("--max_seconds_long", type=float, default=120.0,
+                         help="Maximum audio duration allowed in seconds for long audio.")
     p_serve.add_argument("--demo_only", action="store_true", default=False,
                          help="Serve precomputed examples only and disable job submissions.")
     p_serve.add_argument("--out_dir", default=None,
@@ -592,6 +594,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         out_dir=out_dir,
         max_seconds=float(args.max_seconds),
         demo_only=bool(args.demo_only),
+        max_seconds_long=float(getattr(args, "max_seconds_long", 120.0)),
     )
 
     host = str(args.host)

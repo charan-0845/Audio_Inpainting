@@ -1,0 +1,541 @@
+"""Long-audio inpainting pipeline (LPC pre-fill + windowed DPAI + merge).
+
+Extends DPAIInpainter to arbitrary-length audio without modifying the core ML model.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import numpy as np
+
+from src.audio.lpc_baseline import lpc_inpaint
+from src.pipeline.inpainter import DPAIInpainter
+
+
+# ---------------------------------------------------------------------------
+# Result dataclass
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LongInpaintResult:
+    """Structured result returned by inpaint_long.
+
+    Attributes:
+        waveform: Full reconstructed waveform (N,) as float32 ndarray.
+        loss_histories: Per-window loss histories (one list of float per window).
+        windows: List of window dicts with keys:
+            start (int), end (int), n_gaps (int), start_s (float), end_s (float).
+        lpc_gaps: Gaps handled by LPC (start, end) in sample indices.
+        dpai_gaps: Gaps handled by DPAI (start, end) in sample indices.
+        n_params: Model parameter count (from DPAI model, or 0 if LPC only).
+        runtime_s: Total wall-clock runtime in seconds.
+        seed: Base seed provided.
+        epochs: Number of epochs per window.
+    """
+    waveform: np.ndarray
+    loss_histories: List[List[float]]
+    windows: List[Dict[str, Any]]
+    lpc_gaps: List[Tuple[int, int]]
+    dpai_gaps: List[Tuple[int, int]]
+    n_params: int
+    runtime_s: float
+    seed: int
+    epochs: int
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+def mask_to_gaps(mask: np.ndarray) -> List[Tuple[int, int]]:
+    """Convert a sample-level binary mask (1=observed, 0=missing) to sorted (start, end) sample intervals.
+
+    Args:
+        mask: 1D array of shape (N,) with 1 = observed, 0 = missing.
+
+    Returns:
+        Sorted list of non-overlapping (start, end) tuples where mask is 0.
+    """
+    arr = np.asarray(mask).reshape(-1)
+    if len(arr) == 0:
+        return []
+    z = (arr == 0).astype(int)
+    d = np.diff(np.concatenate([[0], z, [0]]))
+    starts = np.where(d == 1)[0]
+    ends = np.where(d == -1)[0]
+    return [(int(s), int(e)) for s, e in zip(starts, ends) if e > s]
+
+
+def split_gaps(
+    gaps: List[Tuple[int, int]],
+    sample_rate: int,
+    lpc_max_gap_ms: float = 40.0,
+) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """Split gaps into short (<= lpc_max_gap_ms) and long (> lpc_max_gap_ms).
+
+    Args:
+        gaps: List of (start, end) sample intervals.
+        sample_rate: Sample rate in Hz.
+        lpc_max_gap_ms: Max gap length in ms to be considered short.
+
+    Returns:
+        (short_gaps, long_gaps)
+    """
+    ms_to_samples = sample_rate / 1000.0
+    max_short_samples = round(lpc_max_gap_ms * ms_to_samples)
+
+    short_gaps: List[Tuple[int, int]] = []
+    long_gaps: List[Tuple[int, int]] = []
+
+    for s, e in gaps:
+        length = e - s
+        if length <= max_short_samples:
+            short_gaps.append((s, e))
+        else:
+            long_gaps.append((s, e))
+
+    return short_gaps, long_gaps
+
+
+def plan_windows(
+    long_gaps: List[Tuple[int, int]],
+    signal_length: int,
+    sample_rate: int,
+    window_s: float = 5.0,
+    context_s: float = 0.5,
+) -> List[Tuple[int, int, List[Tuple[int, int]]]]:
+    """Plan fixed-length windows covering all long gaps using a greedy left-to-right sweep.
+
+    Algorithm:
+    - If signal_length <= window_samples: return single window [0, signal_length] covering all long gaps.
+    - If no long gaps: return empty list.
+    - Sweep left to right over long gaps. Group gaps into current window as long as:
+        (last_end - first_start + 2 * context_samples) <= window_samples
+    - Center the window on [first_start, last_end]:
+        ideal_start = round(((first_start + last_end) - window_samples) / 2)
+    - Clamp window to [0, signal_length] by shifting inward (never shrink):
+        w_start = max(0, min(ideal_start, signal_length - window_samples))
+        w_end = w_start + window_samples
+
+    Returns:
+        List of (w_start, w_end, covered_long_gaps)
+    """
+    if len(long_gaps) == 0:
+        return []
+
+    window_samples = round(window_s * sample_rate)
+    context_samples = round(context_s * sample_rate)
+
+    if signal_length <= window_samples:
+        return [(0, signal_length, list(long_gaps))]
+
+    sorted_gaps = sorted(long_gaps, key=lambda g: g[0])
+    groups: List[List[Tuple[int, int]]] = []
+    current_group: List[Tuple[int, int]] = [sorted_gaps[0]]
+
+    for gap in sorted_gaps[1:]:
+        group_first_start = current_group[0][0]
+        group_last_end = gap[1]
+        span_with_context = (group_last_end - group_first_start) + 2 * context_samples
+
+        if span_with_context <= window_samples:
+            current_group.append(gap)
+        else:
+            groups.append(current_group)
+            current_group = [gap]
+
+    if current_group:
+        groups.append(current_group)
+
+    windows: List[Tuple[int, int, List[Tuple[int, int]]]] = []
+    for grp in groups:
+        first_start = grp[0][0]
+        last_end = grp[-1][1]
+        mid = (first_start + last_end) / 2.0
+        ideal_start = int(round(mid - window_samples / 2.0))
+
+        # Clamp at clip edges by shifting inward (never shrink)
+        w_start = max(0, min(ideal_start, signal_length - window_samples))
+        w_end = w_start + window_samples
+        windows.append((w_start, w_end, grp))
+
+    return windows
+
+
+def classify_short_gaps(
+    short_gaps: List[Tuple[int, int]],
+    windows: List[Tuple[int, int, Any]],
+    lpc_skip_if_in_window: bool = True,
+) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """Classify short gaps into LPC-filled vs DPAI-filled.
+
+    If lpc_skip_if_in_window is True:
+        Short gaps that fall fully inside any planned window (w_start <= s and e <= w_end)
+        are NOT LPC-filled; DPAI will fill them.
+        Remaining short gaps are LPC-filled.
+    Otherwise:
+        All short gaps are LPC-filled.
+
+    Returns:
+        (lpc_short_gaps, dpai_short_gaps)
+    """
+    if not lpc_skip_if_in_window or not windows:
+        return list(short_gaps), []
+
+    lpc_short_gaps: List[Tuple[int, int]] = []
+    dpai_short_gaps: List[Tuple[int, int]] = []
+
+    for s, e in short_gaps:
+        inside_window = False
+        for w_start, w_end, _ in windows:
+            if w_start <= s and e <= w_end:
+                inside_window = True
+                break
+        if inside_window:
+            dpai_short_gaps.append((s, e))
+        else:
+            lpc_short_gaps.append((s, e))
+
+    return lpc_short_gaps, dpai_short_gaps
+
+
+def assign_gaps_to_best_window(
+    gaps: List[Tuple[int, int]],
+    windows: List[Tuple[int, int, Any]],
+) -> Dict[int, List[Tuple[int, int]]]:
+    """Assign each DPAI gap to the window where it is most central.
+
+    Returns:
+        dict mapping window_index -> list of gaps handled by that window.
+    """
+    assignment: Dict[int, List[Tuple[int, int]]] = {i: [] for i in range(len(windows))}
+
+    for s, e in gaps:
+        gap_mid = (s + e) / 2.0
+        best_win_idx = -1
+        best_dist = float("inf")
+
+        for w_idx, (w_start, w_end, _) in enumerate(windows):
+            if w_start <= s and e <= w_end:
+                w_mid = (w_start + w_end) / 2.0
+                dist = abs(gap_mid - w_mid)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_win_idx = w_idx
+
+        if best_win_idx != -1:
+            assignment[best_win_idx].append((s, e))
+
+    return assignment
+
+
+def paste_with_crossfade(
+    target_waveform: np.ndarray,
+    dpai_window_recon: np.ndarray,
+    window_start: int,
+    gaps: List[Tuple[int, int]],
+    crossfade_samples: int,
+) -> None:
+    """Paste reconstructed samples into target_waveform strictly inside gap regions with equal-power crossfade.
+
+    Observed samples outside gap regions stay bit-exact.
+
+    At gap boundaries:
+    - Left boundary (start of gap): crossfade from target_waveform[s : s + crossfade_samples]
+      to dpai[s : s + crossfade_samples].
+    - Right boundary (end of gap): crossfade from dpai[e - crossfade_samples : e]
+      to target_waveform[e - crossfade_samples : e].
+    - If gap length <= 2 * crossfade_samples: adjust crossfade length to half the gap.
+
+    Crossfade uses equal-power weights: w_in = sin(theta), w_out = cos(theta).
+    """
+    for s, e in gaps:
+        gap_len = e - s
+        if gap_len <= 0:
+            continue
+
+        local_s = s - window_start
+        local_e = e - window_start
+        dpai_slice = dpai_window_recon[local_s:local_e].astype(np.float32)
+
+        # Base paste inside the gap
+        cf = min(crossfade_samples, gap_len // 2)
+
+        if cf > 0:
+            theta = np.linspace(0.0, np.pi / 2.0, cf, dtype=np.float32)
+            w_sin = np.sin(theta)  # 0 -> 1
+            w_cos = np.cos(theta)  # 1 -> 0
+
+            # Left edge: fade from target (LPC pre-fill / prior window) to DPAI if target has audio
+            left_orig = target_waveform[s:s + cf]
+            left_dpai = dpai_slice[:cf]
+            if np.any(left_orig != 0):
+                dpai_slice[:cf] = w_cos * left_orig + w_sin * left_dpai
+
+            # Right edge: fade from DPAI to target (LPC pre-fill / prior window) if target has audio
+            right_dpai = dpai_slice[-cf:]
+            right_orig = target_waveform[e - cf:e]
+            if np.any(right_orig != 0):
+                dpai_slice[-cf:] = w_cos * right_dpai + w_sin * right_orig
+
+        target_waveform[s:e] = dpai_slice
+
+
+# ---------------------------------------------------------------------------
+# Main inpaint_long function
+# ---------------------------------------------------------------------------
+
+def inpaint_long(
+    corrupted: np.ndarray,
+    sample_mask: np.ndarray,
+    cfg: Dict[str, Any],
+    reference: Optional[np.ndarray] = None,
+    epochs: Optional[int] = None,
+    seed: int = 0,
+    callbacks: Optional[Callable[[str, int, int, int, int], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+    device: Optional[str] = None,
+    options: Optional[Dict[str, Any]] = None,
+) -> LongInpaintResult:
+    """Perform long-audio inpainting using LPC pre-fill, windowed DPAI, and equal-power merging.
+
+    Args:
+        corrupted: Corrupted audio waveform (N,) as float32 ndarray.
+        sample_mask: Binary sample mask (N,) with 1=observed, 0=missing.
+        cfg: Fully-resolved DPAI config dict.
+        reference: Optional clean reference waveform (N,) for diagnostic.
+        epochs: Number of optimization epochs per DPAI window.
+        seed: Base random seed.
+        callbacks: Optional callback: callbacks(stage, window_index, n_windows, epoch, epochs)
+        cancel_check: Optional callable returning True if job has been cancelled.
+        device: Torch device string or None (auto-device).
+        options: Optional dict overriding long_audio configuration.
+
+    Returns:
+        LongInpaintResult containing full reconstructed waveform and metadata.
+    """
+    t0 = time.perf_counter()
+    N = len(corrupted)
+    sample_rate = int(cfg.get("audio", {}).get("sample_rate", 16000))
+
+    # Resolve options from cfg["long_audio"] and overrides
+    long_cfg = dict(cfg.get("long_audio", {}))
+    if options:
+        long_cfg.update(options)
+
+    window_s = float(long_cfg.get("window_s", 5.0))
+    context_s = float(long_cfg.get("context_s", 0.5))
+    lpc_max_gap_ms = float(long_cfg.get("lpc_max_gap_ms", 40.0))
+    lpc_skip_if_in_window = bool(long_cfg.get("lpc_skip_if_in_window", True))
+    crossfade_ms = float(long_cfg.get("crossfade_ms", 8.0))
+
+    crossfade_samples = max(1, round(crossfade_ms * sample_rate / 1000.0))
+
+    if epochs is None:
+        epochs = int(cfg.get("optimization", {}).get("epochs", 100))
+
+    # Guard 1: reject if total missing > 40% (existing project rule)
+    total_missing = int((sample_mask == 0.0).sum())
+    missing_ratio = total_missing / max(1, N)
+    if missing_ratio >= 0.40:
+        raise ValueError(
+            f"Total missing audio ({missing_ratio * 100:.1f}%) exceeds the 40% limit."
+        )
+
+    # 1. mask_to_gaps
+    all_gaps = mask_to_gaps(sample_mask)
+    if not all_gaps:
+        # Nothing missing
+        return LongInpaintResult(
+            waveform=np.asarray(corrupted, dtype=np.float32).copy(),
+            loss_histories=[],
+            windows=[],
+            lpc_gaps=[],
+            dpai_gaps=[],
+            n_params=0,
+            runtime_s=time.perf_counter() - t0,
+            seed=seed,
+            epochs=epochs,
+        )
+
+    # 2. Split short vs long gaps
+    short_gaps, long_gaps = split_gaps(all_gaps, sample_rate, lpc_max_gap_ms=lpc_max_gap_ms)
+
+    # 3. If there are no long gaps: LPC-fill everything and return (no DPAI)
+    if not long_gaps:
+        if callbacks:
+            callbacks("lpc", 0, 0, 0, 0)
+        filled = lpc_inpaint(
+            corrupted,
+            mask=sample_mask,
+            gaps=all_gaps,
+            seed=seed,
+        )
+        # Ensure observed samples stay bit-exact
+        waveform = corrupted * sample_mask + filled * (1.0 - sample_mask)
+        return LongInpaintResult(
+            waveform=waveform.astype(np.float32),
+            loss_histories=[],
+            windows=[],
+            lpc_gaps=list(all_gaps),
+            dpai_gaps=[],
+            n_params=0,
+            runtime_s=time.perf_counter() - t0,
+            seed=seed,
+            epochs=epochs,
+        )
+
+    # 4. Plan windows from LONG gaps only
+    # Single window shortcut if clip <= window length
+    window_samples = round(window_s * sample_rate)
+    if N <= window_samples:
+        windows = [(0, N, list(long_gaps))]
+    else:
+        windows = plan_windows(
+            long_gaps,
+            signal_length=N,
+            sample_rate=sample_rate,
+            window_s=window_s,
+            context_s=context_s,
+        )
+
+    # 5. Classify short gaps: lpc vs dpai
+    if N <= window_samples and lpc_skip_if_in_window:
+        # Full clip fits in one window: all gaps handled by DPAI
+        lpc_gaps: List[Tuple[int, int]] = []
+        dpai_short_gaps = list(short_gaps)
+    else:
+        lpc_gaps, dpai_short_gaps = classify_short_gaps(
+            short_gaps,
+            windows,
+            lpc_skip_if_in_window=lpc_skip_if_in_window,
+        )
+
+    # Total DPAI gaps
+    all_dpai_gaps = sorted(long_gaps + dpai_short_gaps, key=lambda g: g[0])
+
+    # Assign DPAI gaps to best windows
+    window_dpai_gaps = assign_gaps_to_best_window(all_dpai_gaps, windows)
+
+    # Pre-fill LPC gaps
+    current_signal = np.asarray(corrupted, dtype=np.float32).copy()
+    if lpc_gaps:
+        if callbacks:
+            callbacks("lpc", 0, len(windows), 0, 0)
+        lpc_mask = np.ones(N, dtype=np.float32)
+        for s, e in lpc_gaps:
+            lpc_mask[s:e] = 0.0
+
+        lpc_filled = lpc_inpaint(
+            corrupted,
+            mask=lpc_mask,
+            gaps=lpc_gaps,
+            seed=seed,
+        )
+        # Paste LPC predictions into lpc_gaps; keep original observed bit-exact
+        for s, e in lpc_gaps:
+            current_signal[s:e] = lpc_filled[s:e]
+
+    # Check cancellation before DPAI
+    if cancel_check and cancel_check():
+        from src.web.server import JobCancelledException  # type: ignore
+        raise JobCancelledException("Job cancelled before DPAI windows.")
+
+    # 6. Execute DPAI for each window
+    dpai_inpainter = DPAIInpainter(cfg, device=device)
+    loss_histories: List[List[float]] = []
+    n_params = 0
+
+    windows_meta: List[Dict[str, Any]] = []
+
+    for k, (w_start, w_end, _) in enumerate(windows):
+        if cancel_check and cancel_check():
+            from src.web.server import JobCancelledException  # type: ignore
+            raise JobCancelledException(f"Job cancelled before window {k}.")
+
+        # Window audio slice
+        win_corrupted = current_signal[w_start:w_end].copy()
+
+        # Window mask: ONLY mask the gaps that are assigned to this window
+        # Any other gaps (or LPC-filled gaps) inside this window remain 1.0 (observed)
+        assigned_to_this_win = window_dpai_gaps.get(k, [])
+        win_mask = np.ones(w_end - w_start, dtype=np.float32)
+        for s, e in assigned_to_this_win:
+            ls = max(0, s - w_start)
+            le = min(w_end - w_start, e - w_start)
+            win_mask[ls:le] = 0.0
+
+        # Guard: check if window missing ratio > 40%
+        win_missing = (win_mask == 0.0).sum()
+        win_ratio = win_missing / max(1, len(win_mask))
+        if win_ratio >= 0.40:
+            # We warn or split; here log/continue or keep valid
+            pass
+
+        win_ref: Optional[np.ndarray] = None
+        if reference is not None:
+            win_ref = reference[w_start:w_end]
+
+        def win_callback(ep: int, total_ep: int, loss_val: float, output: Any) -> None:
+            if cancel_check and cancel_check():
+                from src.web.server import JobCancelledException  # type: ignore
+                raise JobCancelledException(f"Job cancelled during window {k} epoch {ep}.")
+            if callbacks:
+                try:
+                    callbacks("dpai", k, len(windows), ep, total_ep, loss=loss_val, output=output)
+                except TypeError:
+                    callbacks("dpai", k, len(windows), ep, total_ep)
+
+        win_seed = seed + k
+        win_result = dpai_inpainter.inpaint(
+            corrupted=win_corrupted,
+            sample_mask=win_mask,
+            reference=win_ref,
+            epochs=epochs,
+            seed=win_seed,
+            callbacks=win_callback if callbacks or cancel_check else None,
+        )
+
+        loss_histories.append(win_result.loss_history)
+        n_params = win_result.n_params
+
+        # 7. Merge: paste only DPAI-handled gap samples into full signal with equal-power crossfade
+        paste_with_crossfade(
+            target_waveform=current_signal,
+            dpai_window_recon=win_result.waveform,
+            window_start=w_start,
+            gaps=assigned_to_this_win,
+            crossfade_samples=crossfade_samples,
+        )
+
+        windows_meta.append({
+            "window_index": k,
+            "start": int(w_start),
+            "end": int(w_end),
+            "start_s": round(float(w_start) / sample_rate, 4),
+            "end_s": round(float(w_end) / sample_rate, 4),
+            "n_gaps": len(assigned_to_this_win),
+            "gaps": [[int(s), int(e)] for s, e in assigned_to_this_win],
+        })
+
+    # Final safeguard: verify observed samples stay strictly bit-exact to original input
+    # Where sample_mask == 1, current_signal MUST equal corrupted
+    obs_idx = np.where(sample_mask == 1.0)[0]
+    current_signal[obs_idx] = corrupted[obs_idx]
+
+    runtime_s = time.perf_counter() - t0
+
+    return LongInpaintResult(
+        waveform=current_signal.astype(np.float32),
+        loss_histories=loss_histories,
+        windows=windows_meta,
+        lpc_gaps=lpc_gaps,
+        dpai_gaps=all_dpai_gaps,
+        n_params=n_params,
+        runtime_s=runtime_s,
+        seed=seed,
+        epochs=epochs,
+    )

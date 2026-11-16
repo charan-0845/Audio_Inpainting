@@ -113,6 +113,15 @@ export const api = {
     }
     formData.append('seed', String(request.seed))
     formData.append('preserve_observed', String(request.preserve_observed))
+    if (request.long_audio !== undefined) {
+      formData.append('long_audio', request.long_audio)
+    }
+    if (request.window_s !== undefined) {
+      formData.append('window_s', String(request.window_s))
+    }
+    if (request.lpc_max_gap_ms !== undefined) {
+      formData.append('lpc_max_gap_ms', String(request.lpc_max_gap_ms))
+    }
 
     const response = await fetch(`${API_BASE}/jobs`, {
       method: 'POST',

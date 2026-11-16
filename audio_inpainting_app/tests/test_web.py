@@ -782,3 +782,153 @@ def test_experiment_delete_symlink_blocked():
 
         resp = client.delete("/api/experiments/symlink_run")
         assert resp.status_code == 403
+
+
+def test_job_short_clip_emits_standard_event_shapes():
+    """Verify clips <= max_seconds emit standard event shapes without long-audio fields."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cfg = _smoke_cfg()
+        app = create_app(base_cfg=cfg, device="cpu", out_dir=tmp_dir, max_seconds=10.0, max_seconds_long=120.0)
+        client = TestClient(app)
+
+        wav_bytes = _make_wav_bytes(duration_s=2.0)
+        submit_resp = client.post(
+            "/api/jobs",
+            data={
+                "preset": "fast",
+                "epochs": 2,
+                "seed": 0,
+                "mode": "synthetic",
+                "gap_ms": 80,
+                "long_audio": "auto",
+            },
+            files={"audio": ("test.wav", wav_bytes, "audio/wav")},
+        )
+        assert submit_resp.status_code == 201
+        job_id = submit_resp.json()["id"]
+
+        for _ in range(60):
+            time.sleep(0.2)
+            resp = client.get(f"/api/jobs/{job_id}").json()
+            if resp["status"] in ("completed", "failed"):
+                break
+
+        assert resp["status"] == "completed"
+        job = app.state.job_manager.registry[job_id]
+        progress_events = [e for e in job.events if e.get("type") == "progress"]
+        assert len(progress_events) > 0
+
+        # Each progress event must have standard shape without long_audio fields
+        for ev in progress_events:
+            assert "type" in ev and ev["type"] == "progress"
+            assert "epoch" in ev
+            assert "epochs" in ev
+            assert "loss" in ev
+            assert "eta_s" in ev
+            assert "window_index" not in ev
+            assert "n_windows" not in ev
+
+        # long_audio.json should not exist for short clips
+        assert job.run_dir is not None
+        assert not (job.run_dir / "long_audio.json").exists()
+
+
+def test_job_20s_synthetic_with_smoke_config_completes_and_emits_window_events():
+    """Verify 20 s clip with smoke config completes and emits windowed SSE events."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cfg = _smoke_cfg()
+        app = create_app(base_cfg=cfg, device="cpu", out_dir=tmp_dir, max_seconds=10.0, max_seconds_long=120.0)
+        client = TestClient(app)
+
+        wav_bytes = _make_wav_bytes(duration_s=20.0)
+        gaps = [[2000, 2100], [12000, 12100]]  # Two long gaps (>40ms) separated by 10s
+        submit_resp = client.post(
+            "/api/jobs",
+            data={
+                "preset": "fast",
+                "epochs": 2,
+                "seed": 42,
+                "mode": "gaps",
+                "gaps_json": json.dumps(gaps),
+                "long_audio": "auto",
+                "window_s": 5.0,
+                "lpc_max_gap_ms": 40.0,
+            },
+            files={"audio": ("test20s.wav", wav_bytes, "audio/wav")},
+        )
+        assert submit_resp.status_code == 201
+        job_id = submit_resp.json()["id"]
+
+        for _ in range(100):
+            time.sleep(0.3)
+            resp = client.get(f"/api/jobs/{job_id}").json()
+            if resp["status"] in ("completed", "failed"):
+                break
+
+        assert resp["status"] == "completed", f"Job failed with: {resp.get('error')}"
+        job = app.state.job_manager.registry[job_id]
+        progress_events = [e for e in job.events if e.get("type") == "progress"]
+        assert len(progress_events) > 0
+
+        # Verify progress events emit window_index, n_windows, and stage
+        window_indices = set()
+        for ev in progress_events:
+            assert "type" in ev and ev["type"] == "progress"
+            assert "epoch" in ev
+            assert "epochs" in ev
+            assert "loss" in ev
+            assert "eta_s" in ev
+            assert "window_index" in ev
+            assert "n_windows" in ev
+            assert ev["n_windows"] == 2
+            assert "stage" in ev
+            window_indices.add(ev["window_index"])
+
+        assert window_indices == {0, 1}
+
+        # Verify long_audio.json exists and is valid
+        assert job.run_dir is not None
+        long_json = job.run_dir / "long_audio.json"
+        assert long_json.is_file()
+        with open(long_json, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        assert len(meta["windows"]) == 2
+        assert meta["params"]["n_windows"] == 2
+        assert meta["params"]["window_s"] == 5.0
+        assert meta["params"]["lpc_max_gap_ms"] == 40.0
+        assert len(meta["dpai_gaps"]) == 2
+
+        # Verify GET /api/jobs/{id} includes long_audio metadata
+        job_resp = client.get(f"/api/jobs/{job_id}").json()
+        assert "long_audio" in job_resp
+        assert job_resp["long_audio"] is not None
+        assert len(job_resp["long_audio"]["windows"]) == 2
+
+
+def test_job_duration_limits_and_long_audio_modes():
+    """Verify duration limits for auto, on, and off long_audio modes."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cfg = _smoke_cfg()
+        app = create_app(base_cfg=cfg, device="cpu", out_dir=tmp_dir, max_seconds=10.0, max_seconds_long=25.0)
+        client = TestClient(app)
+
+        # 1. duration > max_seconds_long (25s) -> 400 Bad Request
+        wav_30s = _make_wav_bytes(duration_s=30.0)
+        resp1 = client.post(
+            "/api/jobs",
+            data={"preset": "fast", "mode": "synthetic", "gap_ms": 100, "long_audio": "auto"},
+            files={"audio": ("test30s.wav", wav_30s, "audio/wav")},
+        )
+        assert resp1.status_code == 400
+        assert "exceeds maximum allowed limit" in resp1.json()["detail"]
+
+        # 2. duration > max_seconds (10s) with long_audio="off" -> 400 Bad Request
+        wav_15s = _make_wav_bytes(duration_s=15.0)
+        resp2 = client.post(
+            "/api/jobs",
+            data={"preset": "fast", "mode": "synthetic", "gap_ms": 100, "long_audio": "off"},
+            files={"audio": ("test15s.wav", wav_15s, "audio/wav")},
+        )
+        assert resp2.status_code == 400
+        assert "exceeds maximum allowed limit" in resp2.json()["detail"]

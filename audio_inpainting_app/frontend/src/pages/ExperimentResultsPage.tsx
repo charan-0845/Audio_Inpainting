@@ -10,7 +10,7 @@ import { EmptyState, LoadingState, ErrorState } from '@/components/ui/StateCompo
 import { Tooltip } from '@/components/ui/Tooltip'
 import { Separator } from '@/components/ui/Separator'
 import { api, ApiError } from '@/services/api/client'
-import type { JobResponse, JobMetrics } from '@/types/api'
+import type { JobResponse, JobMetrics, LongAudioMeta } from '@/types/api'
 import { formatDuration, formatMs, formatNumber, formatDate } from '@/lib/utils'
 import { PageLayout, PageHeader } from '@/components/layout'
 import { cn } from '@/lib/utils'
@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 export function ExperimentResultsPage() {
   const { id } = useParams<{ id: string }>()
   const [job, setJob] = useState<JobResponse | null>(null)
+  const [longAudio, setLongAudio] = useState<LongAudioMeta | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'overview' | 'audio' | 'visual' | 'config'>('overview')
@@ -45,6 +46,21 @@ export function ExperimentResultsPage() {
     try {
       const data = await api.getJob(id!)
       setJob(data)
+      if (data.long_audio) {
+        setLongAudio(data.long_audio)
+      } else if (data.files.includes('long_audio.json')) {
+        try {
+          const res = await fetch(`/api/jobs/${data.id}/files/long_audio.json`)
+          if (res.ok) {
+            const longData = await res.json()
+            setLongAudio(longData)
+          }
+        } catch {
+          // ignore error fetching long_audio.json
+        }
+      } else {
+        setLongAudio(null)
+      }
       const baseUrl = `/api/jobs/${data.id}/files`
       setAudioSources({
         corrupted: `${baseUrl}/corrupted.wav`,
@@ -396,6 +412,127 @@ export function ExperimentResultsPage() {
             </CardContent>
           </Card>
 
+          {/* Long Audio Windows Section - only when long_audio exists */}
+          {longAudio && (
+            <Card variant="elevated">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle>Long Audio Windows &amp; Gap Breakdown</CardTitle>
+                  <p className="text-xs text-[var(--fg-muted)] mt-1">
+                    {longAudio.windows.length} sliding window{longAudio.windows.length !== 1 ? 's' : ''} • {longAudio.dpai_gaps.length} DPAI gap{longAudio.dpai_gaps.length !== 1 ? 's' : ''} • {longAudio.lpc_gaps.length} LPC gap{longAudio.lpc_gaps.length !== 1 ? 's' : ''} • Window size {longAudio.params.window_s}s
+                  </p>
+                </div>
+                <Badge variant="outline">Long Audio</Badge>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Timeline Visualization */}
+                <div>
+                  <div className="flex items-center justify-between text-xs text-[var(--fg-muted)] mb-2 font-mono">
+                    <span>0.00s</span>
+                    <span className="font-semibold text-[var(--fg)]">Timeline ({longAudio.params.total_duration_s.toFixed(2)}s)</span>
+                    <span>{longAudio.params.total_duration_s.toFixed(2)}s</span>
+                  </div>
+
+                  {/* Visual timeline container */}
+                  <div className="relative w-full h-24 bg-[var(--raised)] border border-[var(--border)] rounded-md overflow-hidden p-2 flex flex-col justify-between">
+                    {/* Window track */}
+                    <div className="relative h-9 w-full bg-[var(--bg)] rounded border border-[var(--border)]">
+                      {longAudio.windows.map((win, idx) => {
+                        const totalDur = longAudio.params.total_duration_s || 1
+                        const leftPct = Math.max(0, Math.min(100, (win.start_s / totalDur) * 100))
+                        const widthPct = Math.max(1, Math.min(100 - leftPct, ((win.end_s - win.start_s) / totalDur) * 100))
+                        return (
+                          <div
+                            key={win.window_index ?? idx}
+                            className="absolute top-0 bottom-0 bg-[var(--primary)]/15 border-x-2 border-[var(--primary)] flex items-center justify-center text-[10px] font-mono text-[var(--fg)] overflow-hidden"
+                            style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                            title={`Window ${idx + 1}: ${win.start_s.toFixed(2)}s – ${win.end_s.toFixed(2)}s (${win.n_gaps} gaps)`}
+                          >
+                            <span className="truncate px-1 opacity-90">W{idx + 1} ({win.start_s.toFixed(1)}–{win.end_s.toFixed(1)}s)</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    {/* Gap track */}
+                    <div className="relative h-7 w-full bg-[var(--bg)] rounded border border-[var(--border)]">
+                      {/* DPAI gaps */}
+                      {longAudio.dpai_gaps.map((gap, idx) => {
+                        const totalDur = longAudio.params.total_duration_s || 1
+                        const leftPct = Math.max(0, Math.min(100, (gap.start_s / totalDur) * 100))
+                        const widthPct = Math.max(0.5, Math.min(100 - leftPct, ((gap.end_s - gap.start_s) / totalDur) * 100))
+                        return (
+                          <div
+                            key={`dpai-${idx}`}
+                            className="absolute top-0 bottom-0 bg-amber-500 rounded-sm"
+                            style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                            title={`DPAI Gap ${idx + 1}: ${gap.start_s.toFixed(3)}s – ${gap.end_s.toFixed(3)}s (${gap.duration_ms.toFixed(0)}ms)`}
+                          />
+                        )
+                      })}
+                      {/* LPC gaps */}
+                      {longAudio.lpc_gaps.map((gap, idx) => {
+                        const totalDur = longAudio.params.total_duration_s || 1
+                        const leftPct = Math.max(0, Math.min(100, (gap.start_s / totalDur) * 100))
+                        const widthPct = Math.max(0.5, Math.min(100 - leftPct, ((gap.end_s - gap.start_s) / totalDur) * 100))
+                        return (
+                          <div
+                            key={`lpc-${idx}`}
+                            className="absolute top-0 bottom-0 bg-sky-400 rounded-sm"
+                            style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                            title={`LPC Gap ${idx + 1}: ${gap.start_s.toFixed(3)}s – ${gap.end_s.toFixed(3)}s (${gap.duration_ms.toFixed(0)}ms)`}
+                          />
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Legend */}
+                  <div className="flex flex-wrap items-center gap-4 mt-3 text-xs text-[var(--fg-muted)]">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-[var(--primary)]/25 border border-[var(--primary)]" />
+                      <span>DPAI Window Extents</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-amber-500" />
+                      <span className="font-medium text-[var(--fg)]">DPAI Reconstructed Gap ({longAudio.dpai_gaps.length})</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-sky-400" />
+                      <span className="font-medium text-[var(--fg)]">LPC Baseline Gap ({longAudio.lpc_gaps.length})</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Windows Table */}
+                <div className="rounded-md border border-[var(--border)] overflow-hidden">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Window</TableHead>
+                        <TableHead>Time Span</TableHead>
+                        <TableHead>Duration</TableHead>
+                        <TableHead>Gaps Covered</TableHead>
+                        <TableHead>Sample Range</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {longAudio.windows.map((win, idx) => (
+                        <TableRow key={win.window_index ?? idx}>
+                          <TableCell className="font-semibold font-mono">#{idx + 1}</TableCell>
+                          <TableCell className="font-mono">{win.start_s.toFixed(2)}s – {win.end_s.toFixed(2)}s</TableCell>
+                          <TableCell className="font-mono">{(win.end_s - win.start_s).toFixed(2)}s</TableCell>
+                          <TableCell className="font-mono">{win.n_gaps} gap{win.n_gaps !== 1 ? 's' : ''}</TableCell>
+                          <TableCell className="font-mono text-xs text-[var(--fg-muted)]">[{win.start_sample}, {win.end_sample}]</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Downloads */}
           <Card variant="elevated">
             <CardHeader><CardTitle>Downloads</CardTitle></CardHeader>
@@ -421,6 +558,11 @@ export function ExperimentResultsPage() {
                 <Button variant="secondary" onClick={() => downloadFile('loss_curve.png')} className="gap-2">
                   <Music className="h-4 w-4" /> Loss Curve (.png)
                 </Button>
+                {job.files.includes('long_audio.json') && (
+                  <Button variant="secondary" onClick={() => downloadFile('long_audio.json')} className="gap-2">
+                    <Settings className="h-4 w-4" /> Long Audio Plan (.json)
+                  </Button>
+                )}
               </div>
             </CardContent>
           </Card>

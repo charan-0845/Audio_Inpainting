@@ -7,6 +7,7 @@ export interface HealthResponse {
   running_job: string | null
   demo_only: boolean
   max_seconds: number
+  max_seconds_long?: number
 }
 
 export interface PresetInfo {
@@ -25,6 +26,8 @@ export interface PresetsResponse {
   }
   default: string
   device: string
+  max_seconds?: number
+  max_seconds_long?: number
 }
 
 export interface JobSubmitRequest {
@@ -37,6 +40,9 @@ export interface JobSubmitRequest {
   seed: number
   preserve_observed: boolean
   reference?: File
+  long_audio?: 'auto' | 'on' | 'off'
+  window_s?: number
+  lpc_max_gap_ms?: number
 }
 
 export interface JobSubmitResponse {
@@ -53,12 +59,44 @@ export interface JobProgress {
   epochs: number
   loss: number | null
   eta_s: number | null
+  window_index?: number
+  n_windows?: number
+  stage?: string
 }
 
 export interface JobMetrics {
   nmse_tot_db: number | null
   nmse_miss_db: number | null
   pesq_delta: number | null
+}
+
+export interface LongAudioWindowMeta {
+  window_index: number
+  start_sample: number
+  end_sample: number
+  start_s: number
+  end_s: number
+  n_gaps: number
+}
+
+export interface LongAudioGapMeta {
+  start_sample: number
+  end_sample: number
+  start_s: number
+  end_s: number
+  duration_ms: number
+}
+
+export interface LongAudioMeta {
+  windows: LongAudioWindowMeta[]
+  lpc_gaps: LongAudioGapMeta[]
+  dpai_gaps: LongAudioGapMeta[]
+  params: {
+    window_s: number
+    lpc_max_gap_ms: number
+    n_windows: number
+    total_duration_s: number
+  }
 }
 
 export interface JobResponse {
@@ -79,6 +117,7 @@ export interface JobResponse {
   device: string
   runtime_s: number
   files: string[]
+  long_audio?: LongAudioMeta | null
 }
 
 export type SSEEventType = 'status' | 'progress' | 'completed' | 'failed' | 'cancelled'
@@ -102,6 +141,10 @@ export interface SSEProgressEvent extends SSEBaseEvent {
   loss: number
   eta_s: number
   preview?: string
+  window_index?: number
+  n_windows?: number
+  stage?: string
+  preview_window?: number
 }
 
 export interface SSECompletedEvent extends SSEBaseEvent {
@@ -141,6 +184,7 @@ export interface ExperimentRun {
   n_params: number | null
   created_at: number | null
   files: string[]
+  long_audio?: LongAudioMeta | null
 }
 
 export interface ExperimentListResponse {

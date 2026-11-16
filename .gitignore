@@ -26,6 +26,16 @@ outputs/spectrograms/*
 outputs/checkpoints/*
 outputs/runs/*
 !outputs/runs/synthetic_200ms_s0_20261008-101357/
+**/outputs/**
+**/dist/**
+**/node_modules/.vite/**
+
+# Agent local artifacts
+.agents/.codex/
+.agents/.impeccable/
+.agents/.taste-skill/
+.agents/skills/design-motion-principles/
+.agents/skills/impeccable/
 
 # Experiment artifacts
 experiments/**/runs/

@@ -452,6 +452,46 @@ Do not change existing job submission/SSE contracts just to simplify frontend co
 
 ---
 
+## 5.5 Phase 11 — Long-audio inpainting extension
+
+- [x] **5.5.1 Window planner & tests:**
+  - `mask_to_gaps`: sorted `(start, end)` sample intervals.
+  - `split_gaps`: short (`<= lpc_max_gap_ms`, default 40 ms) vs long gaps.
+  - `plan_windows`: greedy left-to-right cover, fixed window length (default 5 s), minimum context (default 0.5 s) on each side, centred on gap group, clamped at clip edges by shifting inward (never shrink; if clip < window, single window of full clip).
+  - Tests covering minimal window count, context margin, edge clamping, short clips, and dense group splitting.
+- [x] **5.5.2 LPC pre-fill & crossfade merge:**
+  - `classify_short_gaps`: short gaps fully inside a planned window are skipped by LPC (`lpc_skip_if_in_window: true`) for DPAI to fill; other short gaps filled by LPC baseline and treated as observed.
+  - If no long gaps: LPC-fill everything and return immediately without running DPAI.
+  - `paste_with_crossfade`: paste DPAI gap samples into signal with 8 ms equal-power ($\cos/\sin$) crossfade at gap boundaries when pre-fill/adjacent audio is present; observed samples strictly bit-exact.
+  - `assign_gaps_to_best_window`: assign each gap to window where it is most central.
+  - Tests covering bit-exactness of observed samples, gap filling, and boundary smoothness.
+- [x] **5.5.3 Pipeline integration (`inpaint_long`) & equivalence test:**
+  - `inpaint_long` pipeline orchestrator in `src/pipeline/long_inpaint.py`.
+  - Cancellation check between windows (`JobCancelledException`).
+  - Progress callback supporting `(stage, window_index, n_windows, epoch, epochs)`.
+  - Determinism test: same seed -> identical waveform; different seeds -> different.
+  - Equivalence test: for clip <= window length, output equals `DPAIInpainter.inpaint` with same seed.
+- [x] **5.5.4 Backend integration (`src/web/server.py`, `src/pipeline/io.py`):**
+  - Add `max_seconds_long` (default 120s) parameter and CLI flag.
+  - JobManager worker auto-routing to `inpaint_long` when duration > window_s.
+  - SSE progress mapping with optional `window_index`, `n_windows`, `stage`.
+  - Live preview spectrogram scoped to current window.
+  - Save `long_audio.json` and config snapshot in run directory; update whitelist.
+- [x] **5.5.5 Frontend integration (`frontend/`):**
+  - Update `WorkspacePage.tsx` with duration check lifted to `max_seconds_long`.
+  - Add "Long audio" advanced settings panel (mode, window length, LPC threshold).
+  - Implement `frontend/src/utils/longAudioPlan.ts` with unit tests for pre-submit plan summary.
+  - Update progress indicator for multi-window execution.
+  - Results page timeline display for window extents and LPC vs DPAI regions.
+- [ ] **5.5.6 Evaluation scripts:**
+  - `scripts/eval_long_audio.py` for benchmark evaluation (variants A, B, C).
+  - `scripts/sweep_lpc_threshold.py` for threshold calibration across gap lengths.
+- [ ] **5.5.7 Documentation:**
+  - Update `docs/ARCHITECTURE.md` with long-audio extension architecture.
+  - Update `README.md` and user documentation.
+
+---
+
 ## 6. Definition of done
 
 A phase is complete only when:
@@ -472,13 +512,69 @@ OpenCode: append newest entries at the top. Include date, phase/task, files chan
 
 ### Current status
 
-- **Overall status:** All phases complete (Phase 10 complete).
-- **Current phase:** Project complete.
-- **Next action:** Project complete - ready for handoff.
+- **Overall status:** Phase 11 in progress (Tasks 5.5.1–5.5.5 complete).
+- **Current phase:** Phase 11 — Long-audio inpainting extension.
+- **Next action:** Task 5.5.6 — Evaluation scripts (`scripts/eval_long_audio.py`, `scripts/sweep_lpc_threshold.py`).
 - **Last verified commit:** 567caaa (feat(web): redesign workbench as Option 2 timeline-canvas + docked inspector)
 - **Known blockers:** None recorded.
 
 ### Session entries
+
+**2026-11-14 — Phase 11 (Tasks 5.5.4–5.5.5 Complete: Backend Web Integration & Frontend Long Audio UI)**
+- **Backend Integration (`src/web/server.py`, `app.py`):**
+  - Added `max_seconds_long: float = 120.0` parameter and CLI option `--max_seconds_long` (default 120s).
+  - Exposed `max_seconds` and `max_seconds_long` on `GET /api/health` and `GET /api/presets`.
+  - Added optional form parameters on `POST /api/jobs`: `long_audio` (validated auto|on|off), `window_s` (validated 3.0–10.0), `lpc_max_gap_ms` (validated 0–80).
+  - Enforced duration limit guards: reject duration > `max_seconds_long` in auto/on mode, and duration > `max_seconds` in off mode with 400 Bad Request.
+  - In `JobManager._run_worker`: auto-route qualifying clips (`(not is_lpc) and (job.long_audio == "on" or (job.long_audio == "auto" and duration_s > job.max_seconds))`) to `inpaint_long`.
+  - Emitted SSE progress events mapped into scaled `epoch`/`epochs` with optional fields `window_index`, `n_windows`, `stage`, `preview_window`. Clips `<= max_seconds` emit identical SSE event shapes as before.
+  - Checked `cancel_event` between windows.
+  - Saved `long_audio.json` to run directory and added to `WHITELIST_FILES`. Added note to `metrics.json` that `nmse_tot_db` is dominated by observed audio for long clips.
+  - Fixed pre-existing bugs: defined `duration_ms` before use in `detect` mode; added missing `import yaml` in `compare_experiments`.
+- **Frontend Integration (`frontend/`):**
+  - Updated `frontend/src/types/api.ts` with optional `max_seconds_long`, `long_audio`, `window_s`, `lpc_max_gap_ms`, `window_index`, `n_windows`, `stage`, `preview_window`, `LongAudioMeta`, and `LongAudioWindowMeta`.
+  - Implemented `frontend/src/utils/longAudioPlan.ts` replicating window planning, LPC vs DPAI gap classification, and estimated runtime calculation.
+  - Created `frontend/src/utils/__tests__/longAudioPlan.test.ts` with 7 unit tests (100% passing).
+  - Updated `frontend/src/pages/WorkspacePage.tsx`: lifted duration check to `max_seconds_long`; added Long Audio collapsible section in Advanced Settings (mode, window length, LPC threshold); rendered pre-submit plan summary (windows, DPAI/LPC gap counts, runtime estimate labelled as estimate); updated progress UI to show "Window k of n" and stage badge.
+  - Updated `frontend/src/pages/ExperimentResultsPage.tsx`: added "Long Audio Windows & Gap Breakdown" section with interactive timeline visualization, DPAI vs LPC color-coded markers, coverage extents, and window breakdown table; added `long_audio.json` download button; conditionally hidden if missing.
+  - Updated `frontend/src/services/api/client.ts` to submit long audio form parameters.
+- **Testing & Verification:**
+  - Added 3 web tests in `tests/test_web.py`:
+    1. `test_job_short_clip_emits_standard_event_shapes`: clips `<= 10s` emit standard event shapes without long audio fields, no `long_audio.json`.
+    2. `test_job_20s_synthetic_with_smoke_config_completes_and_emits_window_events`: 20s synthetic clip completes with 2 windows, emits `window_index`, `n_windows`, `stage`, and writes `long_audio.json`.
+    3. `test_job_duration_limits_and_long_audio_modes`: duration limits enforced across auto, on, and off modes with 400 Bad Request.
+  - `pytest tests/test_web.py`: **24 passed, 1 skipped** in 51.71s.
+  - `pytest tests/test_long_inpaint.py`: **13 passed** in 17.40s.
+  - Frontend unit tests (`vitest`): **11 passed** in 2.11s.
+  - Frontend typecheck (`tsc --noEmit`): **Clean, 0 errors**.
+  - Frontend lint (`eslint`): **Clean, 0 errors**.
+  - Frontend build (`vite build`): **Built in 5.92s**.
+
+**2026-11-14 — Phase 11 (Tasks 5.5.1–5.5.3 Complete: Planner, LPC Pre-Fill, Crossfade Merge, and inpaint_long)**
+- **Created `src/pipeline/long_inpaint.py`:**
+  - Implemented `LongInpaintResult` dataclass.
+  - Implemented `mask_to_gaps` to detect zero runs as sorted `(start, end)` sample intervals.
+  - Implemented `split_gaps` separating short gaps (`<= lpc_max_gap_ms`) from long gaps.
+  - Implemented `plan_windows` optimal greedy left-to-right cover from long gaps with fixed `window_s`, context margin `context_s`, centred on gap groups, clamped at clip edges without shrinking.
+  - Implemented `classify_short_gaps` with `lpc_skip_if_in_window` rule (gaps fully inside planned windows skipped by LPC for DPAI; isolated short gaps LPC-filled and marked observed).
+  - Implemented short-circuit for clips with no long gaps (100% LPC fill, no DPAI invocation).
+  - Implemented `assign_gaps_to_best_window` mapping each gap to the window where it is most central.
+  - Implemented `paste_with_crossfade` pasting DPAI samples into gaps with equal-power ($\cos/\sin$) crossfade of `crossfade_ms` at boundaries when pre-fill audio is present, while strictly guaranteeing observed samples remain 100% bit-exact.
+  - Implemented `inpaint_long` supporting per-window seeds (`seed + k`), progress callbacks `(stage, window_index, n_windows, epoch, epochs)`, and cancellation checks between windows (`JobCancelledException`).
+- **Created `tests/test_long_inpaint.py` with 12 comprehensive unit tests:**
+  - Window planner: minimal count, context margin, edge clamping (both left and right), clips shorter than window, dense group splitting.
+  - LPC-skip rule: short gap inside window skipped by LPC; isolated short gap LPC-filled.
+  - Merge: 100% bit-exact observed samples, gap samples correctly filled.
+  - Determinism: identical seed produces bit-exact identical output; differing seed produces different reconstruction.
+  - Cancellation: cleanly raises `JobCancelledException` between windows.
+  - Equivalence: for clip <= window length, output matches `DPAIInpainter.inpaint` output with same seed (smoke config, 5 epochs).
+- **Test execution results:**
+  - `tests/test_long_inpaint.py`: **12 passed** in 38.13s.
+  - Full regression suite: **105 passed, 1 skipped** (Windows symlink) in 166.15s.
+  - Total tests: **117 passed, 1 skipped**.
+- **Constraint adherence:**
+  - Zero modifications to ML core: `DPAIInpainter`, `MultiResUNet`, `HarmonicConv2d`, STFT, loss functions, or evaluation code left completely untouched.
+- **Next task:** Task 5.5.4 — Server integration (`src/web/server.py`, `src/pipeline/io.py`) and web tests.
 
 **2026-10-30 — Phase 5 Complete**
 - **Phase 5 (Configuration, reconstruction and live job state) verified complete:**

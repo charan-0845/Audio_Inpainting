@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import soundfile as sf
 import torch
+import yaml
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -35,6 +36,7 @@ from src.audio.lpc_baseline import lpc_inpaint
 from src.audio.stft import channels_to_stft, compute_stft, crop_to_shape
 from src.pipeline.inpainter import DPAIInpainter, InpaintResult
 from src.pipeline.io import make_run_id, save_run
+from src.pipeline.long_inpaint import inpaint_long
 from src.utils.visualization import plot_spectrogram
 
 logger = logging.getLogger("dpai.web")
@@ -53,6 +55,7 @@ WHITELIST_FILES = {
     "spectrogram.png",
     "config_snapshot.yaml",
     "checkpoint.pt",
+    "long_audio.json",
 }
 
 PRESETS: Dict[str, Dict[str, Any]] = {
@@ -260,7 +263,13 @@ class Job:
     error: Optional[str] = None
     run_dir: Optional[Path] = None
     metrics: Optional[Dict[str, Any]] = None
+    long_audio: str = "auto"
+    window_s: float = 5.0
+    lpc_max_gap_ms: float = 40.0
+    max_seconds: float = 10.0
+    max_seconds_long: float = 120.0
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    events: List[Dict[str, Any]] = field(default_factory=list)
     _listeners: List[asyncio.Queue] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _latest_event: Optional[Dict[str, Any]] = None
@@ -294,6 +303,7 @@ class Job:
         """Publish an event to all registered SSE listeners."""
         self._latest_event = event
         with self._lock:
+            self.events.append(dict(event))
             for q in list(self._listeners):
                 try:
                     if self._loop and self._loop.is_running():
@@ -307,6 +317,7 @@ class Job:
         """Convert job info to JSON-serializable dictionary."""
         produced_files: List[str] = []
         n_params = None
+        long_audio_data = None
         if self.run_dir and self.run_dir.is_dir():
             produced_files = [
                 p.name for p in sorted(self.run_dir.iterdir()) if p.name in WHITELIST_FILES
@@ -316,6 +327,12 @@ class Job:
                 try:
                     meta_data = json.loads(meta_file.read_text(encoding="utf-8"))
                     n_params = meta_data.get("n_params")
+                except Exception:
+                    pass
+            long_audio_file = self.run_dir / "long_audio.json"
+            if long_audio_file.is_file():
+                try:
+                    long_audio_data = json.loads(long_audio_file.read_text(encoding="utf-8"))
                 except Exception:
                     pass
 
@@ -334,6 +351,7 @@ class Job:
             "metrics": self.metrics,
             "n_params": n_params,
             "files": produced_files,
+            "long_audio": long_audio_data,
         }
 
 
@@ -406,6 +424,12 @@ class JobManager:
                 sr = int(job.cfg.get("audio", {}).get("sample_rate", 16000))
                 corrupted = job.wav * job.mask
                 is_lpc = job.cfg.get("model", {}).get("type") == "lpc" or total_epochs == 0
+                duration_s = len(job.wav) / sr
+                qualifies_long = (not is_lpc) and (
+                    job.long_audio == "on"
+                    or (job.long_audio == "auto" and duration_s > float(job.max_seconds))
+                )
+                long_result = None
 
                 if is_lpc:
                     # Quick reconstruction via LPC bidirectional crossfade baseline
@@ -440,6 +464,110 @@ class JobManager:
                         epochs=0,
                         seed=job.seed,
                         n_params=0,
+                    )
+                elif qualifies_long:
+                    # Long-audio windowed inpainting path
+                    inpainter = DPAIInpainter(job.cfg, device=job.device)
+                    stft_params = inpainter._stft_params()
+                    win_len_samples = min(len(corrupted), round(job.window_s * sr))
+                    sample_win = corrupted[:win_len_samples]
+                    observed_ch, _ = inpainter._compute_observed_channels(sample_win)
+                    num_bins = observed_ch.shape[-2]
+                    _, tfmask = inpainter._build_tf_mask(job.mask[:win_len_samples], num_bins)
+                    _, _, original_shape = inpainter._pad(observed_ch, tfmask)
+
+                    def progress_cb_long(
+                        stage: str,
+                        window_index: int,
+                        n_windows: int,
+                        ep: int,
+                        total_ep: int,
+                        loss: Optional[float] = None,
+                        output: Optional[torch.Tensor] = None,
+                    ) -> None:
+                        if job.cancel_event.is_set():
+                            raise JobCancelledException("Job was cancelled by client.")
+
+                        scaled_total_epochs = total_epochs * max(1, n_windows)
+                        scaled_epoch = min(
+                            scaled_total_epochs,
+                            window_index * total_epochs + (ep + 1 if ep < total_ep else ep),
+                        )
+
+                        elapsed = time.time() - (job.started_at or time.time())
+                        if scaled_epoch > 0:
+                            time_per_ep = elapsed / scaled_epoch
+                            rem = max(0, scaled_total_epochs - scaled_epoch)
+                            eta_s = max(0.0, round(rem * time_per_ep, 1))
+                        else:
+                            eta_s = None
+
+                        preview_interval = max(1, min(50, total_ep // 10))
+                        preview_b64: Optional[str] = None
+                        if output is not None and original_shape is not None:
+                            if ep == 0 or (ep + 1) % preview_interval == 0 or (ep + 1) == total_ep:
+                                preview_b64 = _render_preview(
+                                    output, original_shape, stft_params, sr, ep + 1, total_ep
+                                )
+
+                        job.progress = {
+                            "epoch": scaled_epoch,
+                            "epochs": scaled_total_epochs,
+                            "loss": round(loss, 6) if loss is not None else None,
+                            "eta_s": eta_s,
+                            "window_index": window_index,
+                            "n_windows": n_windows,
+                            "stage": stage,
+                        }
+
+                        evt: Dict[str, Any] = {
+                            "type": "progress",
+                            "epoch": scaled_epoch,
+                            "epochs": scaled_total_epochs,
+                            "loss": loss,
+                            "eta_s": eta_s,
+                            "preview": preview_b64,
+                            "window_index": window_index,
+                            "n_windows": n_windows,
+                            "stage": stage,
+                        }
+                        if preview_b64 is not None:
+                            evt["preview_window"] = window_index
+                        job.publish_event(evt)
+
+                    long_result = inpaint_long(
+                        corrupted=corrupted,
+                        sample_mask=job.mask,
+                        cfg=job.cfg,
+                        reference=job.clean,
+                        epochs=total_epochs,
+                        seed=job.seed,
+                        callbacks=progress_cb_long,
+                        cancel_check=lambda: job.cancel_event.is_set(),
+                        device=job.device,
+                        options={
+                            "window_s": job.window_s,
+                            "lpc_max_gap_ms": job.lpc_max_gap_ms,
+                        },
+                    )
+
+                    stft_cfg = job.cfg.get("stft", {})
+                    n_fft = int(stft_cfg.get("n_fft", 1024))
+                    hop = int(stft_cfg.get("hop_length", 120))
+                    win = int(stft_cfg.get("win_length", 600))
+                    recon_tensor = torch.from_numpy(long_result.waveform.astype(np.float32))
+                    final_spec = compute_stft(recon_tensor, n_fft=n_fft, hop_length=hop, win_length=win).numpy()
+                    flat_loss = [l for h in long_result.loss_histories for l in h] if long_result.loss_histories else [0.0]
+
+                    result = InpaintResult(
+                        waveform=long_result.waveform,
+                        loss_history=flat_loss,
+                        val_loss_history=[],
+                        final_spectrogram=final_spec,
+                        runtime_s=long_result.runtime_s,
+                        epochs=total_epochs,
+                        seed=job.seed,
+                        n_params=long_result.n_params,
                     )
                 else:
                     inpainter = DPAIInpainter(job.cfg, device=job.device)
@@ -511,6 +639,33 @@ class JobManager:
                 if run_dir.name != job.id:
                     self.registry[run_dir.name] = job
 
+                if qualifies_long and long_result is not None:
+                    long_audio_dict = {
+                        "windows": long_result.windows,
+                        "lpc_gaps": [[int(s), int(e)] for s, e in long_result.lpc_gaps],
+                        "dpai_gaps": [[int(s), int(e)] for s, e in long_result.dpai_gaps],
+                        "params": {
+                            "n_windows": len(long_result.windows),
+                            "window_s": float(job.window_s),
+                            "lpc_max_gap_ms": float(job.lpc_max_gap_ms),
+                            "context_s": float(job.cfg.get("long_audio", {}).get("context_s", 0.5)),
+                            "crossfade_ms": float(job.cfg.get("long_audio", {}).get("crossfade_ms", 8.0)),
+                            "lpc_skip_if_in_window": bool(job.cfg.get("long_audio", {}).get("lpc_skip_if_in_window", True)),
+                        },
+                        "runtime_s": round(long_result.runtime_s, 3),
+                    }
+                    (run_dir / "long_audio.json").write_text(json.dumps(long_audio_dict, indent=2), encoding="utf-8")
+
+                    metrics_file = run_dir / "metrics.json"
+                    if metrics_file.is_file():
+                        try:
+                            m = json.loads(metrics_file.read_text(encoding="utf-8"))
+                            m["note"] = "nmse_tot_db is dominated by observed audio for long clips."
+                            metrics_file.write_text(json.dumps(m, indent=2), encoding="utf-8")
+                            job.metrics = m
+                        except Exception:
+                            pass
+
                 metrics_file = run_dir / "metrics.json"
                 if metrics_file.is_file():
                     try:
@@ -565,6 +720,7 @@ def create_app(
     out_dir: str = "outputs/runs",
     max_seconds: float = 10.0,
     demo_only: bool = False,
+    max_seconds_long: float = 120.0,
 ) -> FastAPI:
     """Construct and configure the FastAPI web application.
 
@@ -574,6 +730,7 @@ def create_app(
         out_dir: Directory where runs are saved.
         max_seconds: Maximum allowed audio clip duration in seconds.
         demo_only: If True, disallow submitting new jobs and only serve gallery.
+        max_seconds_long: Maximum allowed audio clip duration in seconds for long audio mode.
 
     Returns:
         Configured FastAPI instance.
@@ -601,6 +758,7 @@ def create_app(
     app.state.device = device
     app.state.out_dir = out_dir
     app.state.max_seconds = max_seconds
+    app.state.max_seconds_long = max_seconds_long
     app.state.demo_only = demo_only
     app.state.job_manager = job_manager
 
@@ -618,6 +776,7 @@ def create_app(
             "running_job": job_manager.current_job.id if job_manager.current_job else None,
             "demo_only": app.state.demo_only,
             "max_seconds": app.state.max_seconds,
+            "max_seconds_long": app.state.max_seconds_long,
         }
 
     @app.get("/api/presets")
@@ -648,6 +807,13 @@ def create_app(
             },
             "default": "fast" if is_cpu else "balanced",
             "device": app.state.device,
+            "max_seconds": app.state.max_seconds,
+            "max_seconds_long": app.state.max_seconds_long,
+            "long_audio": {
+                "default": "auto",
+                "window_s": 5.0,
+                "lpc_max_gap_ms": 40.0,
+            },
         }
 
     @app.post("/api/detect-silence")
@@ -681,10 +847,11 @@ def create_app(
                 tmp_path.unlink()
 
         duration_s = len(wav) / sr
-        if duration_s > float(app.state.max_seconds) + 1e-3:
+        effective_max = float(getattr(app.state, "max_seconds_long", app.state.max_seconds))
+        if duration_s > effective_max + 1e-3:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Audio duration ({duration_s:.2f}s) exceeds maximum allowed limit ({app.state.max_seconds:.1f}s).",
+                detail=f"Audio duration ({duration_s:.2f}s) exceeds maximum allowed limit ({effective_max:.1f}s).",
             )
 
         try:
@@ -717,6 +884,9 @@ def create_app(
         seed: int = Form(0),
         preserve_observed: bool = Form(True),
         reference: Optional[UploadFile] = File(None),
+        long_audio: str = Form("auto"),
+        window_s: float = Form(5.0),
+        lpc_max_gap_ms: float = Form(40.0),
     ) -> Dict[str, Any]:
         """Submit a new inpainting job."""
         if app.state.demo_only:
@@ -725,8 +895,26 @@ def create_app(
                 detail="Server is running in --demo_only mode. Submitting new jobs is disabled.",
             )
 
+        if long_audio not in ("auto", "on", "off"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid long_audio mode '{long_audio}'. Must be one of: 'auto', 'on', 'off'.",
+            )
+        if window_s < 3.0 or window_s > 10.0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"window_s ({window_s}) must be between 3.0 and 10.0 seconds.",
+            )
+        if lpc_max_gap_ms < 0.0 or lpc_max_gap_ms > 80.0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"lpc_max_gap_ms ({lpc_max_gap_ms}) must be between 0.0 and 80.0 ms.",
+            )
+
         sr = int(app.state.base_cfg["audio"]["sample_rate"])
         max_duration = float(app.state.max_seconds)
+        max_duration_long = float(getattr(app.state, "max_seconds_long", 120.0))
+        effective_max = max_duration_long if long_audio in ("auto", "on") else max_duration
         max_bytes = 20 * 1024 * 1024  # 20 MB
 
         # 1. Load or synthesise primary audio
@@ -758,7 +946,7 @@ def create_app(
         else:
             if mode == "synthetic":
                 wav = make_synthetic_audio(
-                    duration_seconds=min(max_duration, 5.0),
+                    duration_seconds=min(effective_max, 5.0),
                     sample_rate=sr,
                     seed=int(seed),
                 ).numpy().astype(np.float32)
@@ -771,11 +959,17 @@ def create_app(
 
         num_samples = len(wav)
         duration_s = num_samples / sr
-        if duration_s > max_duration + 1e-3:
+        if duration_s > effective_max + 1e-3:
+            limit_msg = f"Audio duration ({duration_s:.2f}s) exceeds maximum allowed limit ({effective_max:.1f}s)."
+            if long_audio == "off":
+                limit_msg += " (long_audio is off; maximum allowed is 10.0s)."
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Audio duration ({duration_s:.2f}s) exceeds maximum allowed limit ({max_duration:.1f}s).",
+                detail=limit_msg,
             )
+
+        # Precompute duration_ms so all modes have it defined
+        duration_ms = duration_s * 1000.0
 
         # 2. Optional clean reference file
         clean_wav: Optional[np.ndarray] = None
@@ -867,6 +1061,11 @@ def create_app(
             cfg["optimization"]["epochs"] = int(epochs)
         cfg["pipeline"] = cfg.get("pipeline", {})
         cfg["pipeline"]["preserve_observed"] = bool(preserve_observed)
+        cfg["long_audio"] = {
+            "enabled": long_audio,
+            "window_s": float(window_s),
+            "lpc_max_gap_ms": float(lpc_max_gap_ms),
+        }
 
         # 5. Build Job and enqueue
         run_id = make_run_id(clip_id, actual_gap_ms, int(seed))
@@ -882,6 +1081,11 @@ def create_app(
             out_dir=app.state.out_dir,
             clean=clean_wav,
             warnings=warnings,
+            long_audio=long_audio,
+            window_s=float(window_s),
+            lpc_max_gap_ms=float(lpc_max_gap_ms),
+            max_seconds=max_duration,
+            max_seconds_long=max_duration_long,
         )
         job_manager.submit(job)
 
@@ -1236,6 +1440,14 @@ def create_app(
             p.name for p in sorted(run_dir.iterdir()) if p.name in WHITELIST_FILES
         ]
 
+        long_audio_file = run_dir / "long_audio.json"
+        long_audio_data = None
+        if long_audio_file.is_file():
+            try:
+                long_audio_data = json.loads(long_audio_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
         return {
             "id": run_dir.name,
             "clip_id": meta.get("clip_id", ""),
@@ -1249,6 +1461,7 @@ def create_app(
             "n_params": meta.get("n_params"),
             "created_at": run_dir.stat().st_mtime,
             "files": produced_files,
+            "long_audio": long_audio_data,
         }
 
     @app.post("/api/experiments/compare")

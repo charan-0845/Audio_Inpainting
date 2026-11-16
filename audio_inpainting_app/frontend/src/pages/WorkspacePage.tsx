@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Loader2, X, Play, Pause, Volume2, VolumeX, RotateCcw, RotateCw, Minus, Plus, Trash2, Settings, Zap, Mic, FileAudio, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
@@ -19,6 +19,7 @@ import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js'
 import { PageLayout } from '@/components/layout'
 import { detectSilentRegions } from '@/utils/silenceDetection'
+import { planLongAudio } from '@/utils/longAudioPlan'
 
 // Region type definitions
 type RegionType = 'manual' | 'auto' | 'reconstructed'
@@ -93,11 +94,26 @@ export function WorkspacePage() {
   const [preserveObserved, setPreserveObserved] = useState(true)
   const [presets, setPresets] = useState<PresetsResponse['presets'] | null>(null)
   const [device, setDevice] = useState<'cpu' | 'cuda'>('cpu')
-  
+  const [maxSeconds, setMaxSeconds] = useState(10)
+  const [maxSecondsLong, setMaxSecondsLong] = useState(120)
+
+  // Long Audio Configuration
+  const [longAudioMode, setLongAudioMode] = useState<'auto' | 'on' | 'off'>('auto')
+  const [windowS, setWindowS] = useState(5.0)
+  const [lpcMaxGapMs, setLpcMaxGapMs] = useState(40.0)
+
   // Job state
   const [jobId, setJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<'idle' | 'submitting' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'>('idle')
-  const [jobProgress, setJobProgress] = useState({ epoch: 0, epochs: 0, loss: 0, eta: 0 })
+  const [jobProgress, setJobProgress] = useState<{
+    epoch: number
+    epochs: number
+    loss: number
+    eta: number
+    window_index?: number
+    n_windows?: number
+    stage?: string
+  }>({ epoch: 0, epochs: 0, loss: 0, eta: 0 })
   const [jobError, setJobError] = useState<string | null>(null)
   const [eventSource, setEventSource] = useState<EventSource | null>(null)
   const [lossHistory, setLossHistory] = useState<number[]>([])
@@ -289,11 +305,39 @@ export function WorkspacePage() {
     }
   }, [audioFile, audioDuration, silenceThreshold, minSilenceDuration, clearRegions, addToHistory])
   
+  // Pre-submit long audio plan calculation
+  const longPlan = useMemo(() => {
+    if (!audioDuration || audioDuration <= 0 || regions.length === 0) return null
+    const gapList: [number, number][] = regions.map(r => [
+      Math.round(r.start * 1000),
+      Math.round(r.end * 1000)
+    ])
+    return planLongAudio({
+      gaps: gapList,
+      duration_s: audioDuration,
+      sample_rate: sampleRate,
+      window_s: windowS,
+      lpc_max_gap_ms: lpcMaxGapMs,
+      preset,
+      device,
+      epochs: epochs ?? (presets && presets[preset]?.epochs ? presets[preset].epochs : undefined),
+      long_audio_mode: longAudioMode,
+    })
+  }, [audioDuration, regions, sampleRate, windowS, lpcMaxGapMs, preset, device, epochs, presets, longAudioMode])
+
   // Validation
   const validateGaps = useCallback(() => {
     if (!audioDuration) return { valid: false, error: 'No audio loaded' }
     if (regions.length === 0) return { valid: false, error: 'Mark at least one corrupted gap to inpaint' }
     
+    const effectiveMax = (longAudioMode === 'auto' || longAudioMode === 'on') ? maxSecondsLong : maxSeconds
+    if (audioDuration > effectiveMax) {
+      return {
+        valid: false,
+        error: `Audio duration (${audioDuration.toFixed(1)}s) exceeds limit of ${effectiveMax}s (${longAudioMode === 'off' ? 'Long Audio disabled' : 'maximum duration'}).`
+      }
+    }
+
     const totalMs = audioDuration * 1000
     let totalMissingMs = 0
     let hasGapOver100 = false
@@ -321,7 +365,7 @@ export function WorkspacePage() {
     }
     
     return { valid: true }
-  }, [audioDuration, regions])
+  }, [audioDuration, regions, longAudioMode, maxSeconds, maxSecondsLong])
   
   // SSE connection
   const connectToSSE = useCallback((id: string) => {
@@ -349,7 +393,15 @@ export function WorkspacePage() {
     if (event.type === 'status') {
       setJobStatus(event.status)
       if (event.status === 'running') {
-        setJobProgress({ epoch: 0, epochs: event.epochs || 0, loss: 0, eta: 0 })
+        setJobProgress({
+          epoch: 0,
+          epochs: event.epochs || 0,
+          loss: 0,
+          eta: 0,
+          window_index: event.window_index,
+          n_windows: event.n_windows,
+          stage: event.stage,
+        })
       }
     } else if (event.type === 'progress') {
       setJobStatus('running')
@@ -358,6 +410,9 @@ export function WorkspacePage() {
         epochs: event.epochs,
         loss: event.loss,
         eta: event.eta_s || 0,
+        window_index: event.window_index,
+        n_windows: event.n_windows,
+        stage: event.stage,
       })
       setLossHistory(prev => [...prev, event.loss])
       if (event.preview) {
@@ -414,6 +469,9 @@ export function WorkspacePage() {
       formData.append('preserve_observed', String(preserveObserved))
       formData.append('mode', 'gaps')
       formData.append('gaps_json', JSON.stringify(regions.map(r => [Math.round(r.start * 1000), Math.round(r.end * 1000)])))
+      formData.append('long_audio', longAudioMode)
+      formData.append('window_s', String(windowS))
+      formData.append('lpc_max_gap_ms', String(lpcMaxGapMs))
       
       if (epochs) formData.append('epochs', String(epochs))
       if (referenceFile) formData.append('reference', referenceFile)
@@ -437,7 +495,7 @@ export function WorkspacePage() {
       setJobError(err instanceof Error ? err.message : 'Job submission failed')
       setJobStatus('failed')
     }
-  }, [audioFile, referenceFile, preset, epochs, seed, preserveObserved, regions, validateGaps])
+  }, [audioFile, referenceFile, preset, epochs, seed, preserveObserved, regions, validateGaps, longAudioMode, windowS, lpcMaxGapMs, connectToSSE])
   
   const handleJobCancel = useCallback(async () => {
     if (!jobId) return
@@ -458,6 +516,8 @@ export function WorkspacePage() {
       setPresets(data.presets)
       setDevice(data.device as 'cpu' | 'cuda')
       if (data.device === 'cpu') setPreset('fast')
+      if (data.max_seconds) setMaxSeconds(data.max_seconds)
+      if (data.max_seconds_long) setMaxSecondsLong(data.max_seconds_long)
     }).catch(console.error)
   }, [])
   
@@ -682,17 +742,6 @@ export function WorkspacePage() {
   
   // Handle detect silence (needs to be after handleAudioUpload for clearRegions)
     
-  // Compute gap stats
-    
-  // Load presets on mount
-  useEffect(() => {
-    api.getPresets().then(data => {
-      setPresets(data.presets)
-      setDevice(data.device as 'cpu' | 'cuda')
-      if (data.device === 'cpu') setPreset('fast')
-    }).catch(console.error)
-  }, [])
-  
   return (
     <PageLayout title="New Reconstruction" description="Upload audio, mark corrupted regions, and run inpainting">
       <div className="grid lg:grid-cols-3 gap-6">
@@ -929,7 +978,25 @@ export function WorkspacePage() {
 
                     {jobStatus === 'running' && (
                       <>
-                        <Progress value={(jobProgress.epoch / jobProgress.epochs) * 100} className="h-2" />
+                        {jobProgress.n_windows && jobProgress.n_windows > 1 ? (
+                          <div className="flex items-center justify-between text-xs text-[var(--fg-muted)] mb-1">
+                            <span className="font-semibold text-[var(--primary)]">
+                              Window {(jobProgress.window_index ?? 0) + 1} of {jobProgress.n_windows}
+                            </span>
+                            {jobProgress.stage && (
+                              <span className="capitalize font-mono px-2 py-0.5 rounded bg-[var(--raised)] border border-[var(--border)] text-[var(--fg)]">
+                                Stage: {jobProgress.stage}
+                              </span>
+                            )}
+                          </div>
+                        ) : jobProgress.stage ? (
+                          <div className="flex items-center justify-end text-xs text-[var(--fg-muted)] mb-1">
+                            <span className="capitalize font-mono px-2 py-0.5 rounded bg-[var(--raised)] border border-[var(--border)] text-[var(--fg)]">
+                              Stage: {jobProgress.stage}
+                            </span>
+                          </div>
+                        ) : null}
+                        <Progress value={(jobProgress.epoch / (jobProgress.epochs || 1)) * 100} className="h-2" />
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
                           <div>
                             <span className="text-[var(--fg-muted)]">Epoch</span>
@@ -1151,6 +1218,93 @@ export function WorkspacePage() {
                     <Input label="Min Duration (ms)" type="number" value={minSilenceDuration} onChange={e => setMinSilenceDuration(parseInt(e.target.value) || 0)} min={10} max={500} />
                   </div>
                 )}
+                
+                <Separator />
+
+                {/* Long Audio Section */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-semibold">Long Audio Configuration</Label>
+                    <Badge variant="outline" className="text-xs">
+                      Max {maxSecondsLong}s
+                    </Badge>
+                  </div>
+
+                  <div>
+                    <Label>Processing Mode</Label>
+                    <Select
+                      value={longAudioMode}
+                      onValueChange={(v) => setLongAudioMode(v as 'auto' | 'on' | 'off')}
+                      options={[
+                        { value: 'auto', label: 'Auto (windowed if > 10s)' },
+                        { value: 'on', label: 'Always Windowed (On)' },
+                        { value: 'off', label: 'Single Window Only (Off, ≤ 10s)' },
+                      ]}
+                    />
+                    <p className="text-xs text-[var(--fg-muted)] mt-1">
+                      Enables windowed DPAI inference and LPC gap filling for recordings up to {maxSecondsLong}s.
+                    </p>
+                  </div>
+
+                  {longAudioMode !== 'off' && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Input
+                          label="Window Length (s)"
+                          type="number"
+                          value={windowS}
+                          onChange={e => setWindowS(Math.max(3, Math.min(10, parseFloat(e.target.value) || 5)))}
+                          min={3}
+                          max={10}
+                          step={0.5}
+                        />
+                        <span className="text-[10px] text-[var(--fg-muted)]">3.0 to 10.0 seconds</span>
+                      </div>
+                      <div>
+                        <Input
+                          label="LPC Max Gap (ms)"
+                          type="number"
+                          value={lpcMaxGapMs}
+                          onChange={e => setLpcMaxGapMs(Math.max(0, Math.min(80, parseFloat(e.target.value) || 0)))}
+                          min={0}
+                          max={80}
+                          step={5}
+                        />
+                        <span className="text-[10px] text-[var(--fg-muted)]">≤ 40 ms recommended</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {longPlan && longPlan.is_long_audio && (
+                    <div className="p-3 bg-[var(--raised)] border border-[var(--border)] rounded-md space-y-2 text-xs">
+                      <div className="flex items-center justify-between font-medium text-[var(--fg)]">
+                        <span>Pre-Submit Plan</span>
+                        <span className="text-[var(--primary)] font-mono">{longPlan.n_windows} window{longPlan.n_windows !== 1 ? 's' : ''}</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 py-1 text-center font-mono">
+                        <div className="bg-[var(--bg)] p-1.5 rounded border border-[var(--border)]">
+                          <div className="text-[10px] text-[var(--fg-muted)]">Windows</div>
+                          <div className="font-semibold text-[var(--fg)]">{longPlan.n_windows}</div>
+                        </div>
+                        <div className="bg-[var(--bg)] p-1.5 rounded border border-[var(--border)]">
+                          <div className="text-[10px] text-[var(--fg-muted)]">DPAI Gaps</div>
+                          <div className="font-semibold text-amber-500">{longPlan.dpai_gap_count}</div>
+                        </div>
+                        <div className="bg-[var(--bg)] p-1.5 rounded border border-[var(--border)]">
+                          <div className="text-[10px] text-[var(--fg-muted)]">LPC Gaps</div>
+                          <div className="font-semibold text-sky-400">{longPlan.lpc_gap_count}</div>
+                        </div>
+                      </div>
+                      <div className="flex justify-between items-center text-[var(--fg-muted)] pt-1">
+                        <span>Runtime estimate:</span>
+                        <span className="font-mono text-[var(--fg)] font-semibold">{longPlan.runtime_estimate_label}</span>
+                      </div>
+                      <p className="text-[10px] text-[var(--fg-muted)] italic">
+                        * Runtime is an estimate. Backend plan is authoritative.
+                      </p>
+                    </div>
+                  )}
+                </div>
                 
                 <Separator />
                 
