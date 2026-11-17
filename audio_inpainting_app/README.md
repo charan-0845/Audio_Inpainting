@@ -73,6 +73,16 @@ Once running, open `http://localhost:8000` in your browser. Features include:
 - A/B audio player (reconstruction vs. corrupted vs. optional clean reference) and side-by-side spectrograms.
 - Precomputed examples gallery (`scripts/precompute_examples.py`).
 
+### Long-audio reconstruction order
+
+For audio longer than the short-clip limit, the pipeline first detects missing
+segments and classifies them using the configured LPC gap threshold. Windows
+are planned from large gaps only, so small gaps never create, expand, merge, or
+shift a window. DPAI then processes each window using the original mask,
+including any small gaps inside that window. After all windows are stitched,
+LPC fills only the remaining small-gap samples outside every window. Observed
+samples are restored according to `pipeline.preserve_observed`.
+
 ---
 
 ## Run-directory layout

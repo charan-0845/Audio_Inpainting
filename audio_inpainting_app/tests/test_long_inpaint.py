@@ -32,6 +32,7 @@ import numpy as np
 import pytest
 import yaml
 
+import src.pipeline.long_inpaint as long_pipeline
 from src.pipeline.inpainter import DPAIInpainter
 from src.pipeline.long_inpaint import (
     LongInpaintResult,
@@ -159,6 +160,26 @@ def test_plan_windows_dense_group_splitting():
     assert windows[1][2] == [gaps[1]]
 
 
+def test_window_planning_ignores_short_gaps_in_mask():
+    sr = 16000
+    signal_length = 20 * sr
+    mask = np.ones(signal_length, dtype=np.float32)
+    large_gap = (8 * sr, int(8.2 * sr))
+    small_gap = (int(8.8 * sr), int(8.82 * sr))
+    mask[large_gap[0]:large_gap[1]] = 0.0
+    mask[small_gap[0]:small_gap[1]] = 0.0
+
+    _, large_gaps = split_gaps(mask_to_gaps(mask), sr, lpc_max_gap_ms=40.0)
+    windows_with_small = plan_windows(
+        large_gaps, signal_length, sr, window_s=5.0, context_s=0.5
+    )
+    windows_without_small = plan_windows(
+        [large_gap], signal_length, sr, window_s=5.0, context_s=0.5
+    )
+
+    assert windows_with_small == windows_without_small
+
+
 # ===========================================================================
 # 2. LPC-skip rule tests
 # ===========================================================================
@@ -250,6 +271,104 @@ def test_no_long_gaps_lpc_only():
     # Gaps must be filled (not all zeros)
     assert np.abs(res.waveform[1000:1300]).sum() > 0.0
     assert np.abs(res.waveform[5000:5400]).sum() > 0.0
+
+
+def test_windows_run_before_lpc_and_keep_short_gaps_in_dpai_mask(monkeypatch):
+    """DPAI sees short gaps inside windows; LPC receives only leftovers."""
+    sr = 16000
+    signal_length = 12 * sr
+    original = _make_synth_clip(signal_length, sr=sr, seed=3)
+    mask = np.ones(signal_length, dtype=np.float32)
+    long_gap = (2 * sr, int(2.1 * sr))
+    short_inside = (int(2.5 * sr), int(2.52 * sr))
+    short_outside = (10 * sr, int(10.02 * sr))
+    for start, end in (long_gap, short_inside, short_outside):
+        mask[start:end] = 0.0
+    corrupted = original * mask
+    calls = []
+    seen_masks = []
+
+    class FakeInpainter:
+        def __init__(self, cfg, device=None):
+            pass
+
+        def inpaint(self, corrupted, sample_mask, reference, epochs, seed, callbacks=None):
+            calls.append(("dpai", seed))
+            seen_masks.append(sample_mask.copy())
+            waveform = corrupted.copy()
+            waveform[sample_mask == 0.0] = 0.25
+            return type("FakeResult", (), {
+                "waveform": waveform,
+                "loss_history": [0.0],
+                "n_params": 1,
+            })()
+
+    def fake_lpc(signal, mask, gaps, seed):
+        calls.append(("lpc", tuple(gaps)))
+        output = signal.copy()
+        for start, end in gaps:
+            output[start:end] = 0.75
+        return output
+
+    monkeypatch.setattr(long_pipeline, "DPAIInpainter", FakeInpainter)
+    monkeypatch.setattr(long_pipeline, "lpc_inpaint", fake_lpc)
+
+    result = long_pipeline.inpaint_long(
+        corrupted, mask, _smoke_cfg(), epochs=5, seed=11, device="cpu"
+    )
+
+    assert len(result.windows) == 1
+    assert any(np.any(window_mask[int(2.5 * sr):int(2.52 * sr)] == 0.0)
+               for window_mask in seen_masks)
+    assert result.dpai_gaps == [long_gap, short_inside]
+    assert result.lpc_gaps == [short_outside]
+    assert [call[0] for call in calls] == ["dpai", "lpc"]
+    assert np.all(np.isfinite(result.waveform))
+    assert np.all(result.waveform[mask == 0.0] != 0.0)
+
+
+def test_partially_window_covered_small_gap_leaves_only_boundary_for_lpc(monkeypatch):
+    sr = 16000
+    signal_length = 12 * sr
+    original = _make_synth_clip(signal_length, sr=sr, seed=4)
+    mask = np.ones(signal_length, dtype=np.float32)
+    long_gap = (2 * sr, int(2.1 * sr))
+    partial_small = (int(4.99 * sr), int(5.01 * sr))
+    for start, end in (long_gap, partial_small):
+        mask[start:end] = 0.0
+    corrupted = original * mask
+    lpc_calls = []
+
+    class FakeInpainter:
+        def __init__(self, cfg, device=None):
+            pass
+
+        def inpaint(self, corrupted, sample_mask, reference, epochs, seed, callbacks=None):
+            waveform = corrupted.copy()
+            waveform[sample_mask == 0.0] = 0.5
+            return type("FakeResult", (), {
+                "waveform": waveform,
+                "loss_history": [0.0],
+                "n_params": 1,
+            })()
+
+    def fake_lpc(signal, mask, gaps, seed):
+        lpc_calls.extend(gaps)
+        output = signal.copy()
+        for start, end in gaps:
+            output[start:end] = 0.75
+        return output
+
+    monkeypatch.setattr(long_pipeline, "DPAIInpainter", FakeInpainter)
+    monkeypatch.setattr(long_pipeline, "lpc_inpaint", fake_lpc)
+
+    result = long_pipeline.inpaint_long(
+        corrupted, mask, _smoke_cfg(), epochs=5, seed=12, device="cpu"
+    )
+
+    assert lpc_calls == [(5 * sr, int(5.01 * sr))]
+    assert np.all(np.isfinite(result.waveform))
+    assert np.all(result.waveform[mask == 0.0] != 0.0)
 
 
 # ===========================================================================
