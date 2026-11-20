@@ -73,6 +73,27 @@ Once running, open `http://localhost:8000` in your browser. Features include:
 - A/B audio player (reconstruction vs. corrupted vs. optional clean reference) and side-by-side spectrograms.
 - Precomputed examples gallery (`scripts/precompute_examples.py`).
 
+### CPU-only distributed cluster
+
+Gateway:
+
+```bash
+scripts/start_redis.sh PASS &
+python app.py serve --host 0.0.0.0 --cluster redis://:PASS@127.0.0.1:6379/0 \
+  --worker_device cpu --coordinators 8 --max_seconds 10 --max_seconds_long 120
+```
+
+Each worker node:
+
+```bash
+DPAI_REDIS=redis://:PASS@<gateway-ip>:6379/0 scripts/run_worker.sh <gateway-ip>
+```
+
+Workers default to CPU and use `DPAI_TORCH_THREADS` (default: all detected cores).
+Run one worker process per node with all cores, or N processes with cores/N threads.
+Windows workers use Celery `--pool=solo`. Restrict Redis with `requirepass` and firewall rules;
+Redis URLs support `redis://:PASS@host:6379/0`.
+
 ### Long-audio reconstruction order
 
 For audio longer than the short-clip limit, the pipeline first detects missing

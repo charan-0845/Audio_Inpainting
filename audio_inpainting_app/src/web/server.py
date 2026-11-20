@@ -36,10 +36,17 @@ from src.audio.lpc_baseline import lpc_inpaint
 from src.audio.stft import channels_to_stft, compute_stft, crop_to_shape
 from src.pipeline.inpainter import DPAIInpainter, InpaintResult
 from src.pipeline.io import make_run_id, save_run
-from src.pipeline.long_inpaint import inpaint_long
+from src.pipeline.long_inpaint import (
+    inpaint_long,
+    mask_to_gaps,
+    plan_windows,
+    split_gaps,
+)
 from src.utils.visualization import plot_spectrogram
+from src.utils.preview import render_preview as _render_preview
 
 logger = logging.getLogger("dpai.web")
+_PLOT_LOCK = threading.Lock()
 
 # Whitelist of allowed artefact files that may be downloaded from /files/{name}
 WHITELIST_FILES = {
@@ -208,39 +215,6 @@ def parse_and_validate_gaps(
     return mask, warnings
 
 
-def _render_preview(
-    output_padded: torch.Tensor,
-    original_shape: Tuple[int, int],
-    stft_cfg: Dict[str, int],
-    sample_rate: int,
-    epoch: int,
-    total_epochs: int,
-) -> str:
-    """Render in-progress spectrogram to base64 PNG data URL."""
-    try:
-        t = output_padded.detach().cpu()
-        if t.ndim == 4:
-            t = t.squeeze(0)
-        out_ch = crop_to_shape(t, original_shape)
-        stft_out = channels_to_stft(out_ch)
-        fig = plot_spectrogram(
-            stft_out,
-            sample_rate=sample_rate,
-            hop_length=int(stft_cfg["hop_length"]),
-            n_fft=int(stft_cfg["n_fft"]),
-            title=f"Inpainting Progress – Epoch {epoch}/{total_epochs}",
-        )
-        fig.set_size_inches(6, 2.5)
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=80)
-        plt.close(fig)
-        buf.seek(0)
-        return "data:image/png;base64," + base64.b64encode(buf.read()).decode("ascii")
-    except Exception as e:
-        logger.warning("Failed to render preview: %s", e)
-        return ""
-
-
 @dataclass
 class Job:
     """In-memory representation of an inpainting job."""
@@ -268,6 +242,7 @@ class Job:
     lpc_max_gap_ms: float = 40.0
     max_seconds: float = 10.0
     max_seconds_long: float = 120.0
+    max_windows: int = 24
     cancel_event: threading.Event = field(default_factory=threading.Event)
     events: List[Dict[str, Any]] = field(default_factory=list)
     _listeners: List[asyncio.Queue] = field(default_factory=list)
@@ -356,15 +331,30 @@ class Job:
 
 
 class JobManager:
-    """Single-worker FIFO queue and in-memory job registry."""
+    """FIFO queue and in-memory job registry, optionally with cluster coordination."""
 
-    def __init__(self) -> None:
+    def __init__(self, executor=None, n_coordinators: int = 1) -> None:
         self.registry: Dict[str, Job] = {}
         self._queue: queue.Queue[Job] = queue.Queue()
-        self.current_job: Optional[Job] = None
+        self.executor = executor
+        self._running: set[str] = set()
+        self._running_lock = threading.Lock()
         self._stop_event = threading.Event()
-        self._worker_thread = threading.Thread(target=self._run_worker, daemon=True)
-        self._worker_thread.start()
+        n = max(1, n_coordinators) if executor else 1
+        self._threads = [
+            threading.Thread(target=self._run_worker, daemon=True)
+            for _ in range(n)
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    @property
+    def current_job(self) -> Optional[Job]:
+        with self._running_lock:
+            if not self._running:
+                return None
+            job_id = next(iter(self._running))
+            return self.registry.get(job_id)
 
     def submit(self, job: Job) -> None:
         """Add job to registry and queue."""
@@ -403,7 +393,8 @@ class JobManager:
                 self._queue.task_done()
                 continue
 
-            self.current_job = job
+            with self._running_lock:
+                self._running.add(job.id)
             job.status = JobStatus.RUNNING
             job.started_at = time.time()
             total_epochs = int(job.cfg["optimization"]["epochs"])
@@ -542,12 +533,27 @@ class JobManager:
                         reference=job.clean,
                         epochs=total_epochs,
                         seed=job.seed,
-                        callbacks=progress_cb_long,
+                        callbacks=None if self.executor is not None else progress_cb_long,
                         cancel_check=lambda: job.cancel_event.is_set(),
                         device=job.device,
+                        executor=self.executor,
+                        on_event=(lambda event: (
+                            job.progress.update({
+                                "epoch": int(event.get("epoch", 0)),
+                                "epochs": int(event.get("epochs", total_epochs)),
+                                "loss": event.get("loss"),
+                                "eta_s": event.get("eta_s"),
+                                "window_index": event.get("window_index"),
+                                "n_windows": event.get("n_windows"),
+                                "stage": event.get("stage", "dpai"),
+                            }),
+                            job.publish_event(event),
+                        )[1]) if self.executor is not None else None,
                         options={
                             "window_s": job.window_s,
                             "lpc_max_gap_ms": job.lpc_max_gap_ms,
+                            "max_windows": job.max_windows,
+                            "job_id": job.id,
                         },
                     )
 
@@ -570,71 +576,76 @@ class JobManager:
                         n_params=long_result.n_params,
                     )
                 else:
-                    inpainter = DPAIInpainter(job.cfg, device=job.device)
-                    stft_params = inpainter._stft_params()
+                    if self.executor is not None:
+                        from src.cluster.dispatch import remote_inpaint
+                        result = remote_inpaint(job, self.executor, sr, total_epochs)
+                    else:
+                        inpainter = DPAIInpainter(job.cfg, device=job.device)
+                        stft_params = inpainter._stft_params()
 
-                    # Derive padding & shape for preview rendering
-                    observed_ch, _ = inpainter._compute_observed_channels(corrupted)
-                    num_bins = observed_ch.shape[-2]
-                    _, tfmask = inpainter._build_tf_mask(job.mask, num_bins)
-                    _, _, original_shape = inpainter._pad(observed_ch, tfmask)
+                        # Derive padding & shape for preview rendering
+                        observed_ch, _ = inpainter._compute_observed_channels(corrupted)
+                        num_bins = observed_ch.shape[-2]
+                        _, tfmask = inpainter._build_tf_mask(job.mask, num_bins)
+                        _, _, original_shape = inpainter._pad(observed_ch, tfmask)
 
-                    def progress_cb(
-                        epoch: int, ep_total: int, loss_val: float, output: torch.Tensor
-                    ) -> None:
-                        if job.cancel_event.is_set():
-                            raise JobCancelledException("Job was cancelled by client.")
+                        def progress_cb(
+                            epoch: int, ep_total: int, loss_val: float, output: torch.Tensor
+                        ) -> None:
+                            if job.cancel_event.is_set():
+                                raise JobCancelledException("Job was cancelled by client.")
 
-                        elapsed = time.time() - (job.started_at or time.time())
-                        time_per_ep = elapsed / (epoch + 1)
-                        rem = max(0, ep_total - (epoch + 1))
-                        eta_s = max(0.0, round(rem * time_per_ep, 1))
+                            elapsed = time.time() - (job.started_at or time.time())
+                            time_per_ep = elapsed / (epoch + 1)
+                            rem = max(0, ep_total - (epoch + 1))
+                            eta_s = max(0.0, round(rem * time_per_ep, 1))
 
-                        job.progress = {
-                            "epoch": epoch + 1,
-                            "epochs": ep_total,
-                            "loss": round(loss_val, 6),
-                            "eta_s": eta_s,
-                        }
+                            job.progress = {
+                                "epoch": epoch + 1,
+                                "epochs": ep_total,
+                                "loss": round(loss_val, 6),
+                                "eta_s": eta_s,
+                            }
 
-                        preview_interval = max(1, min(50, ep_total // 10))
-                        preview_b64: Optional[str] = None
-                        if epoch == 0 or (epoch + 1) % preview_interval == 0 or (epoch + 1) == ep_total:
-                            preview_b64 = _render_preview(
-                                output, original_shape, stft_params, sr, epoch + 1, ep_total
-                            )
+                            preview_interval = max(1, min(50, ep_total // 10))
+                            preview_b64: Optional[str] = None
+                            if epoch == 0 or (epoch + 1) % preview_interval == 0 or (epoch + 1) == ep_total:
+                                preview_b64 = _render_preview(
+                                    output, original_shape, stft_params, sr, epoch + 1, ep_total
+                                )
 
-                        job.publish_event({
-                            "type": "progress",
-                            "epoch": epoch + 1,
-                            "epochs": ep_total,
-                            "loss": loss_val,
-                            "eta_s": eta_s,
-                            "preview": preview_b64,
-                        })
+                            job.publish_event({
+                                "type": "progress",
+                                "epoch": epoch + 1,
+                                "epochs": ep_total,
+                                "loss": loss_val,
+                                "eta_s": eta_s,
+                                "preview": preview_b64,
+                            })
 
-                    result = inpainter.inpaint(
+                        result = inpainter.inpaint(
+                            corrupted=corrupted,
+                            sample_mask=job.mask,
+                            reference=job.clean,
+                            epochs=total_epochs,
+                            seed=job.seed,
+                            callbacks=[progress_cb],
+                        )
+
+                with _PLOT_LOCK:
+                    run_dir = save_run(
+                        result=result,
                         corrupted=corrupted,
                         sample_mask=job.mask,
-                        reference=job.clean,
-                        epochs=total_epochs,
-                        seed=job.seed,
-                        callbacks=[progress_cb],
+                        cfg=job.cfg,
+                        clip_id=job.clip_id,
+                        gap_ms=job.gap_ms,
+                        device=job.device,
+                        out_dir=job.out_dir,
+                        clean=job.clean,
+                        is_speech=False,
+                        sample_rate=sr,
                     )
-
-                run_dir = save_run(
-                    result=result,
-                    corrupted=corrupted,
-                    sample_mask=job.mask,
-                    cfg=job.cfg,
-                    clip_id=job.clip_id,
-                    gap_ms=job.gap_ms,
-                    device=job.device,
-                    out_dir=job.out_dir,
-                    clean=job.clean,
-                    is_speech=False,
-                    sample_rate=sr,
-                )
                 job.run_dir = run_dir
                 if run_dir.name != job.id:
                     self.registry[run_dir.name] = job
@@ -700,17 +711,30 @@ class JobManager:
                 job.completed_at = time.time()
                 job.publish_event({"type": "cancelled", "status": "cancelled"})
             except Exception as exc:
-                logger.exception("Job %s failed: %s", job.id, exc)
-                job.status = JobStatus.FAILED
-                job.error = str(exc)
-                job.completed_at = time.time()
-                job.publish_event({
-                    "type": "failed",
-                    "status": "failed",
-                    "error": str(exc),
-                })
+                is_cluster_cancel = False
+                if self.executor is not None:
+                    try:
+                        from src.cluster.dispatch import ClusterCancelled
+                        is_cluster_cancel = isinstance(exc, ClusterCancelled)
+                    except Exception:
+                        is_cluster_cancel = False
+                if is_cluster_cancel:
+                    job.status = JobStatus.CANCELLED
+                    job.completed_at = time.time()
+                    job.publish_event({"type": "cancelled", "status": "cancelled"})
+                else:
+                    logger.exception("Job %s failed: %s", job.id, exc)
+                    job.status = JobStatus.FAILED
+                    job.error = str(exc)
+                    job.completed_at = time.time()
+                    job.publish_event({
+                        "type": "failed",
+                        "status": "failed",
+                        "error": str(exc),
+                    })
             finally:
-                self.current_job = None
+                with self._running_lock:
+                    self._running.discard(job.id)
                 self._queue.task_done()
 
 
@@ -721,6 +745,9 @@ def create_app(
     max_seconds: float = 10.0,
     demo_only: bool = False,
     max_seconds_long: float = 120.0,
+    executor=None,
+    n_coordinators: int = 4,
+    max_windows: int = 24,
 ) -> FastAPI:
     """Construct and configure the FastAPI web application.
 
@@ -751,7 +778,7 @@ def create_app(
         allow_headers=["*"],
     )
 
-    job_manager = JobManager()
+    job_manager = JobManager(executor=executor, n_coordinators=n_coordinators)
 
     # Store server state on app.state
     app.state.base_cfg = base_cfg
@@ -759,6 +786,7 @@ def create_app(
     app.state.out_dir = out_dir
     app.state.max_seconds = max_seconds
     app.state.max_seconds_long = max_seconds_long
+    app.state.max_windows = max_windows
     app.state.demo_only = demo_only
     app.state.job_manager = job_manager
 
@@ -777,6 +805,12 @@ def create_app(
             "demo_only": app.state.demo_only,
             "max_seconds": app.state.max_seconds,
             "max_seconds_long": app.state.max_seconds_long,
+            "cluster": job_manager.executor is not None,
+            "windows_queued": (
+                job_manager.executor.queue_depth()
+                if job_manager.executor is not None else None
+            ),
+            "running_jobs": len(job_manager._running),
         }
 
     @app.get("/api/presets")
@@ -1050,6 +1084,36 @@ def create_app(
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
             actual_gap_ms = float(round((mask == 0.0).sum() * 1000.0 / sr))
 
+        if (
+            app.state.job_manager.executor is not None
+            and long_audio in ("on", "auto")
+            and duration_s > max_duration
+        ):
+            all_gaps = mask_to_gaps(mask)
+            _, long_gaps = split_gaps(
+                all_gaps,
+                sample_rate=sr,
+                lpc_max_gap_ms=float(lpc_max_gap_ms),
+            )
+            if len(wav) <= round(float(window_s) * sr):
+                planned_windows = 1 if long_gaps else 0
+            else:
+                planned_windows = len(plan_windows(
+                    long_gaps,
+                    signal_length=len(wav),
+                    sample_rate=sr,
+                    window_s=float(window_s),
+                    context_s=0.5,
+                ))
+            if planned_windows > int(app.state.max_windows):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Cluster window count ({planned_windows}) exceeds limit "
+                        f"({int(app.state.max_windows)})."
+                    ),
+                )
+
         # 4. Resolve configuration
         cfg = dict(app.state.base_cfg)
         device_presets = get_presets_for_device(app.state.device)
@@ -1086,6 +1150,7 @@ def create_app(
             lpc_max_gap_ms=float(lpc_max_gap_ms),
             max_seconds=max_duration,
             max_seconds_long=max_duration_long,
+            max_windows=int(app.state.max_windows),
         )
         job_manager.submit(job)
 

@@ -571,6 +571,14 @@ def _build_parser() -> argparse.ArgumentParser:
                          help="Serve precomputed examples only and disable job submissions.")
     p_serve.add_argument("--out_dir", default=None,
                          help="Parent directory for run artefacts.")
+    p_serve.add_argument("--cluster", default=None,
+                         help="Redis URL; enables distributed worker execution.")
+    p_serve.add_argument("--worker_device", default="cpu",
+                         help="Device used by worker nodes (defaults to cpu).")
+    p_serve.add_argument("--coordinators", type=int, default=4,
+                         help="Concurrent gateway job coordinators.")
+    p_serve.add_argument("--max_windows", type=int, default=24,
+                         help="Maximum DPAI windows allowed per cluster job.")
 
     return parser
 
@@ -585,7 +593,13 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     from src.web.server import create_app
 
     cfg = _build_cfg(args)
-    device = _auto_device(args)
+    executor = None
+    if args.cluster:
+        from src.cluster.dispatch import ClusterExecutor
+        executor = ClusterExecutor(args.cluster)
+        device = args.worker_device or "cpu"
+    else:
+        device = _auto_device(args)
     out_dir = args.out_dir or cfg.get("run", {}).get("out_dir", "outputs/runs")
 
     app = create_app(
@@ -595,12 +609,19 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         max_seconds=float(args.max_seconds),
         demo_only=bool(args.demo_only),
         max_seconds_long=float(getattr(args, "max_seconds_long", 120.0)),
+        executor=executor,
+        n_coordinators=int(args.coordinators),
+        max_windows=int(args.max_windows),
     )
 
     host = str(args.host)
     port = int(args.port)
 
     print(f"\n[DPAI Web Demo] Starting server at http://{host}:{port}")
+    if executor is not None:
+        print(f"  Cluster: enabled | Worker device: {device} | Coordinators: {args.coordinators}")
+        print(f"  Redis: {args.cluster}")
+        print(f"  Window cap: {args.max_windows}")
     print(f"  Device: {device} | Max audio length: {args.max_seconds}s | Demo only: {args.demo_only}")
     uvicorn.run(app, host=host, port=port)
 

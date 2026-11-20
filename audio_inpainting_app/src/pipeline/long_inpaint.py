@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -302,6 +303,8 @@ def inpaint_long(
     cancel_check: Optional[Callable[[], bool]] = None,
     device: Optional[str] = None,
     options: Optional[Dict[str, Any]] = None,
+    executor: Optional[Any] = None,
+    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> LongInpaintResult:
     """Perform long-audio inpainting using windowed DPAI, LPC leftovers, and equal-power merging.
 
@@ -413,10 +416,50 @@ def inpaint_long(
         len(long_gaps),
     )
 
+    max_windows = int(long_cfg.get("max_windows", 24))
+    if len(windows) > max_windows:
+        raise ValueError(
+            f"Long-audio window count ({len(windows)}) exceeds limit ({max_windows})."
+        )
+
     # 5. Execute DPAI first. Every missing sample inside a window remains
     # missing in the local mask, including short gaps.
     current_signal = np.asarray(corrupted, dtype=np.float32).copy()
-    dpai_inpainter = DPAIInpainter(cfg, device=device)
+    dpai_inpainter = None if executor is not None else DPAIInpainter(cfg, device=device)
+    cluster_results: Optional[List[Dict[str, Any]]] = None
+
+    if executor is not None:
+        segments: List[Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]] = []
+        for w_start, w_end, _ in windows:
+            win_corrupted = corrupted[w_start:w_end].copy()
+            win_mask = np.asarray(sample_mask[w_start:w_end], dtype=np.float32).copy()
+            win_ref = reference[w_start:w_end].copy() if reference is not None else None
+            segments.append((win_corrupted, win_mask, win_ref))
+
+        cancel_event = threading.Event()
+        if cancel_check and cancel_check():
+            cancel_event.set()
+
+        def cluster_event(event: Dict[str, Any]) -> None:
+            if cancel_check and cancel_check():
+                cancel_event.set()
+                return
+            if on_event:
+                on_event(dict(event, stage="dpai"))
+            if callbacks:
+                k = int(event.get("window_index", event.get("window", 0)))
+                ep = int(event.get("epoch", 0))
+                callbacks(
+                    "dpai", k, len(windows), ep,
+                    int(event.get("epochs", ep)),
+                    loss=event.get("loss"),
+                )
+
+        from src.cluster.dispatch import run_windows
+        cluster_results = run_windows(
+            executor, str(long_cfg.get("job_id", "")), cfg, segments, int(epochs), int(seed),
+            cancel_event, cluster_event,
+        )
     loss_histories: List[List[float]] = []
     n_params = 0
     covered_by_dpai = np.zeros(N, dtype=bool)
@@ -469,22 +512,31 @@ def inpaint_long(
                     callbacks("dpai", k, len(windows), ep, total_ep)
 
         win_seed = seed + k
-        win_result = dpai_inpainter.inpaint(
-            corrupted=win_corrupted,
-            sample_mask=win_mask,
-            reference=win_ref,
-            epochs=epochs,
-            seed=win_seed,
-            callbacks=win_callback if callbacks or cancel_check else None,
-        )
+        if cluster_results is not None:
+            cluster_result = cluster_results[k]
+            win_waveform = np.asarray(cluster_result["wave"], dtype=np.float32)
+            win_loss = list(cluster_result.get("loss", []))
+            win_n_params = int(cluster_result.get("n_params", 0))
+        else:
+            win_result = dpai_inpainter.inpaint(
+                corrupted=win_corrupted,
+                sample_mask=win_mask,
+                reference=win_ref,
+                epochs=epochs,
+                seed=win_seed,
+                callbacks=win_callback if callbacks or cancel_check else None,
+            )
+            win_waveform = win_result.waveform
+            win_loss = win_result.loss_history
+            win_n_params = win_result.n_params
 
-        loss_histories.append(win_result.loss_history)
-        n_params = win_result.n_params
+        loss_histories.append(win_loss)
+        n_params = win_n_params
 
         # 7. Merge: paste only DPAI-handled gap samples into full signal with equal-power crossfade
         paste_with_crossfade(
             target_waveform=current_signal,
-            dpai_window_recon=win_result.waveform,
+            dpai_window_recon=win_waveform,
             window_start=w_start,
             gaps=assigned_to_this_win,
             crossfade_samples=crossfade_samples,

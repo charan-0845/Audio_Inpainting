@@ -490,6 +490,20 @@ Do not change existing job submission/SSE contracts just to simplify frontend co
   - Update `docs/ARCHITECTURE.md` with long-audio extension architecture.
   - Update `README.md` and user documentation.
 
+## 5.6 Phase 12 — Cluster execution
+
+- [x] Copy attached cluster package files and add cluster dependencies.
+- [x] Add opt-in `--cluster`, `--worker_device`, `--coordinators`, and `--max_windows` gateway arguments.
+- [x] Implement multi-coordinator `JobManager`, running-job set, health fields, cancellation and plotting lock.
+- [x] Keep the gateway-free-of-Celery-Redis imports in local mode.
+- [x] Implement CPU-only worker defaults and `DPAI_TORCH_THREADS`.
+- [x] Document Redis password/firewall requirements and Windows `--pool=solo`.
+- [x] Wire `inpaint_long(executor=..., on_event=...)` and window-cap rejection.
+- [x] Add fake-executor equivalence, cancellation, failure and window-cap tests.
+- [ ] Run local Redis plus one CPU worker and complete short and 12 s cluster runs. **BLOCKED:** `redis-server` executable is not available on this Windows host.
+- [ ] Report cluster/local max absolute differences for short and 12 s clips. **NOT MEASURED:** requires real Redis/Celery worker run.
+- [x] Run full existing suite and confirm no regressions.
+
 ---
 
 ## 6. Definition of done
@@ -512,13 +526,23 @@ OpenCode: append newest entries at the top. Include date, phase/task, files chan
 
 ### Current status
 
-- **Overall status:** Phase 11 in progress (Tasks 5.5.1–5.5.5 complete).
-- **Current phase:** Phase 11 — Long-audio inpainting extension.
-- **Next action:** Task 5.5.6 — Evaluation scripts (`scripts/eval_long_audio.py`, `scripts/sweep_lpc_threshold.py`).
+- **Overall status:** Phase 12 in progress.
+- **Current phase:** Phase 12 — Cluster execution.
+- **Next action:** Real Redis/Celery smoke run is BLOCKED on this host because `redis-server` is unavailable; retain fake-executor verification and scaling table as NOT MEASURED until infrastructure is available.
 - **Last verified commit:** 567caaa (feat(web): redesign workbench as Option 2 timeline-canvas + docked inspector)
 - **Known blockers:** None recorded.
 
 ### Session entries
+
+**2026-11-20 — Phase 12: Cluster baseline and implementation checkpoint**
+- **Baseline:** `pytest -q` completed before cluster changes: **124 passed, 1 skipped, 1 warning** in 357.07s.
+- **Copied:** `src/cluster/`, `src/utils/preview.py`, cluster scripts, tests, requirements and `docs/CLUSTER.md` from `dpai_cluster.zip`.
+- **Implemented:** CPU worker defaults, Redis URL/password support, opt-in gateway CLI flags, multi-coordinator job execution hooks, preview re-export, cluster health fields, `_PLOT_LOCK`, short-clip remote dispatch and long-audio cluster executor plumbing.
+- **Verified:** `pytest tests/test_web.py -q` — **24 passed, 1 skipped**; `pytest tests/test_cluster.py -q` — **2 passed** before additional fake tests. Python compile check passed.
+- **Cluster/long verification:** `pytest tests/test_cluster.py tests/test_long_inpaint.py -q` — **22 passed**.
+- **Full suite:** `pytest -q` — **130 passed, 1 skipped, 1 warning** in 195.17s.
+- **Remaining:** Cluster package tests are being expanded; full Redis/Celery one-worker smoke runs and measured CPU scaling are **NOT MEASURED**.
+- **Next:** Run cluster tests, targeted long-audio tests, full suite, and document actual local Redis/worker verification only if Redis and a worker can be started successfully.
 
 **2026-11-14 — Phase 11 (Tasks 5.5.4–5.5.5 Complete: Backend Web Integration & Frontend Long Audio UI)**
 - **Backend Integration (`src/web/server.py`, `app.py`):**
