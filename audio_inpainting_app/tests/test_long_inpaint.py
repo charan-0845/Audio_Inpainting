@@ -41,6 +41,7 @@ from src.pipeline.long_inpaint import (
     inpaint_long,
     mask_to_gaps,
     plan_windows,
+    plan_adaptive_windows,
     split_gaps,
 )
 
@@ -158,6 +159,92 @@ def test_plan_windows_dense_group_splitting():
     assert len(windows) == 2
     assert windows[0][2] == [gaps[0]]
     assert windows[1][2] == [gaps[1]]
+
+
+def test_adaptive_windows_isolated_and_nearby_gaps():
+    sr = 16000
+    mask = np.ones(30 * sr, dtype=np.float32)
+    gaps = [
+        (5 * sr, int(5.1 * sr)),
+        (int(5.4 * sr), int(5.5 * sr)),
+        (25 * sr, int(25.1 * sr)),
+    ]
+    for s, e in gaps:
+        mask[s:e] = 0.0
+
+    windows, infeasible = plan_adaptive_windows(
+        gaps, mask, len(mask), sr,
+        preferred_window_s=5.0,
+        minimum_window_s=1.0,
+        maximum_window_s=10.0,
+        minimum_clean_context_s=0.25,
+    )
+
+    assert not infeasible
+    assert len(windows) == 2
+    assert windows[0].gaps == gaps[:2]
+    assert windows[0].individually_planned is False
+    assert windows[1].gaps == [gaps[2]]
+
+
+def test_adaptive_windows_distant_gaps_are_separate():
+    sr = 16000
+    mask = np.ones(50 * sr, dtype=np.float32)
+    gaps = [(5 * sr, int(5.1 * sr)), (42 * sr, int(42.1 * sr))]
+    for s, e in gaps:
+        mask[s:e] = 0.0
+
+    windows, infeasible = plan_adaptive_windows(
+        gaps, mask, len(mask), sr, preferred_window_s=5.0,
+        maximum_window_s=10.0,
+    )
+
+    assert not infeasible
+    assert len(windows) == 2
+    assert all(w.individually_planned for w in windows)
+
+
+def test_adaptive_windows_reject_context_overlap_and_boundaries():
+    sr = 16000
+    mask = np.ones(20 * sr, dtype=np.float32)
+    gap_at_start = (100, 200)
+    overlapping_context_gap = (8 * sr, int(8.1 * sr))
+    nearby_gap = (int(8.3 * sr), int(8.4 * sr))
+    isolated_gap = (15 * sr, int(15.1 * sr))
+    mask[gap_at_start[0]:gap_at_start[1]] = 0.0
+    mask[overlapping_context_gap[0]:overlapping_context_gap[1]] = 0.0
+    mask[nearby_gap[0]:nearby_gap[1]] = 0.0
+    mask[isolated_gap[0]:isolated_gap[1]] = 0.0
+
+    windows, infeasible = plan_adaptive_windows(
+        [gap_at_start, overlapping_context_gap, nearby_gap, isolated_gap],
+        mask, len(mask), sr, preferred_window_s=5.0,
+        maximum_window_s=10.0,
+    )
+
+    reasons = {item["reason"] for item in infeasible}
+    assert "insufficient_clean_context" in reasons
+    assert len(windows) >= 1
+
+
+def test_adaptive_windows_mark_large_minimum_window_infeasible():
+    sr = 16000
+    mask = np.ones(20 * sr, dtype=np.float32)
+    gap = (int(9 * sr), int(9.5 * sr))
+    mask[gap[0]:gap[1]] = 0.0
+
+    _, infeasible = plan_adaptive_windows(
+        [gap], mask, len(mask), sr,
+        preferred_window_s=5.0,
+        maximum_window_s=0.4,
+        minimum_clean_context_s=0.25,
+    )
+
+    assert infeasible
+    assert infeasible[0]["reason"] in (
+        "minimum_window_exceeds_maximum",
+        "insufficient_clean_context",
+    )
 
 
 def test_window_planning_ignores_short_gaps_in_mask():

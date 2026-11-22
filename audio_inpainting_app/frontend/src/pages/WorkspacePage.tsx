@@ -116,8 +116,9 @@ export function WorkspacePage() {
   }>({ epoch: 0, epochs: 0, loss: 0, eta: 0 })
   const [jobError, setJobError] = useState<string | null>(null)
   const [eventSource, setEventSource] = useState<EventSource | null>(null)
-  const [lossHistory, setLossHistory] = useState<number[]>([])
+  const [lossHistoryByWindow, setLossHistoryByWindow] = useState<Record<number, number[]>>({})
   const [liveSpectrogram, setLiveSpectrogram] = useState<string | null>(null)
+  const activeLossHistory = lossHistoryByWindow[jobProgress.window_index ?? 0] || []
   
   // Validation
   const [validationError, setValidationError] = useState<string | null>(null)
@@ -414,7 +415,11 @@ export function WorkspacePage() {
         n_windows: event.n_windows,
         stage: event.stage,
       })
-      setLossHistory(prev => [...prev, event.loss])
+      const windowIndex = event.window_index ?? 0
+      setLossHistoryByWindow(prev => ({
+        ...prev,
+        [windowIndex]: [...(prev[windowIndex] || []), event.loss],
+      }))
       if (event.preview) {
         setLiveSpectrogram(event.preview)
       }
@@ -458,7 +463,7 @@ export function WorkspacePage() {
     
     setJobStatus('submitting')
     setJobError(null)
-    setLossHistory([])
+    setLossHistoryByWindow({})
     setLiveSpectrogram(null)
     
     try {
@@ -473,7 +478,10 @@ export function WorkspacePage() {
       formData.append('window_s', String(windowS))
       formData.append('lpc_max_gap_ms', String(lpcMaxGapMs))
       
-      if (epochs) formData.append('epochs', String(epochs))
+      if (epochs) {
+        formData.append('epochs', String(epochs))
+        formData.append('epochs_per_window', String(epochs))
+      }
       if (referenceFile) formData.append('reference', referenceFile)
       
       const response = await fetch('/api/jobs', {
@@ -1016,8 +1024,11 @@ export function WorkspacePage() {
                           </div>
                         </div>
 
-                        {lossHistory.length > 1 && (
+                        {activeLossHistory.length > 1 && (
                           <div className="h-64 bg-[var(--bg)] border border-[var(--border)] rounded-md p-3 relative">
+                            <p className="absolute top-2 left-3 z-10 text-xs text-[var(--fg-muted)]">
+                              Window {(jobProgress.window_index ?? 0) + 1} loss
+                            </p>
                             <canvas
                               ref={el => {
                                 if (el) {
@@ -1031,11 +1042,11 @@ export function WorkspacePage() {
                                   ctx.strokeStyle = '#EA580C'
                                   ctx.lineWidth = 2
                                   ctx.beginPath()
-                                  const minLoss = Math.min(...lossHistory)
-                                  const maxLoss = Math.max(...lossHistory)
+                                  const minLoss = Math.min(...activeLossHistory)
+                                  const maxLoss = Math.max(...activeLossHistory)
                                   const range = maxLoss - minLoss || 1e-6
-                                  lossHistory.forEach((loss, i) => {
-                                    const x = (i / (lossHistory.length - 1)) * (w - 12) + 6
+                                  activeLossHistory.forEach((loss, i) => {
+                                    const x = (i / (activeLossHistory.length - 1)) * (w - 12) + 6
                                     const normalized = (loss - minLoss) / range
                                     const y = (1 - normalized) * (h - 20) + 10
                                     if (i === 0) ctx.moveTo(x, y)
@@ -1120,7 +1131,7 @@ export function WorkspacePage() {
             <CardContent className="pt-0 space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <Input
-                  label="Epochs"
+                  label="Epochs per DPAI Window"
                   type="number"
                   placeholder={presets && presets[preset] && presets[preset].epochs ? presets[preset].epochs.toString() : '—'}
                   value={epochs || ''}

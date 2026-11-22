@@ -48,6 +48,19 @@ class LongInpaintResult:
     runtime_s: float
     seed: int
     epochs: int
+    context_infeasible_gaps: List[Dict[str, Any]] = field(default_factory=list)
+    estimated_processing_s: float = 0.0
+
+
+@dataclass(frozen=True)
+class AdaptiveWindow:
+    """A mask-aware processing window and the DPAI gaps assigned to it."""
+    start: int
+    end: int
+    gaps: List[Tuple[int, int]]
+    individually_planned: bool
+    left_context_available: bool
+    right_context_available: bool
 
 
 # ---------------------------------------------------------------------------
@@ -109,27 +122,37 @@ def plan_windows(
     signal_length: int,
     sample_rate: int,
     window_s: float = 5.0,
-    context_s: float = 0.5,
+    context_s: float = 0.25,
+    mask: Optional[np.ndarray] = None,
+    min_window_s: float = 1.0,
+    max_window_s: float = 10.0,
+    merge_strategy: str = "adaptive",
 ) -> List[Tuple[int, int, List[Tuple[int, int]]]]:
-    """Plan fixed-length windows covering all long gaps using a greedy left-to-right sweep.
+    """Plan adaptive windows, preserving the legacy tuple API.
 
-    Algorithm:
-    - If signal_length <= window_samples: return single window [0, signal_length] covering all long gaps.
-    - If no long gaps: return empty list.
-    - Sweep left to right over long gaps. Group gaps into current window as long as:
-        (last_end - first_start + 2 * context_samples) <= window_samples
-    - Center the window on [first_start, last_end]:
-        ideal_start = round(((first_start + last_end) - window_samples) / 2)
-    - Clamp window to [0, signal_length] by shifting inward (never shrink):
-        w_start = max(0, min(ideal_start, signal_length - window_samples))
-        w_end = w_start + window_samples
-
-    Returns:
-        List of (w_start, w_end, covered_long_gaps)
+    When ``mask`` is supplied, planning verifies original clean context and
+    reports infeasible gaps through ``plan_adaptive_windows``.  The mask-less
+    path remains for backwards-compatible callers and legacy tests.
     """
     if len(long_gaps) == 0:
         return []
 
+    if mask is not None:
+        windows, _ = plan_adaptive_windows(
+            long_gaps=long_gaps,
+            mask=mask,
+            signal_length=signal_length,
+            sample_rate=sample_rate,
+            preferred_window_s=window_s,
+            minimum_window_s=min_window_s,
+            maximum_window_s=max_window_s,
+            minimum_clean_context_s=context_s,
+            merge_strategy=merge_strategy,
+        )
+        return [(w.start, w.end, w.gaps) for w in windows]
+
+    # Legacy mode for callers that do not have a mask.  This never pretends
+    # that an unknown context interval is clean.
     window_samples = round(window_s * sample_rate)
     context_samples = round(context_s * sample_rate)
 
@@ -167,6 +190,158 @@ def plan_windows(
         windows.append((w_start, w_end, grp))
 
     return windows
+
+
+def gap_has_clean_context(
+    gap: Tuple[int, int],
+    mask: np.ndarray,
+    context_samples: int,
+) -> bool:
+    """Return whether a gap has C original observed samples on both sides."""
+    s, e = gap
+    n = len(mask)
+    if s < context_samples or e + context_samples > n:
+        return False
+    left = np.asarray(mask[s - context_samples:s], dtype=np.float32)
+    right = np.asarray(mask[e:e + context_samples], dtype=np.float32)
+    return bool(len(left) == context_samples and len(right) == context_samples
+                and np.all(left == 1.0) and np.all(right == 1.0))
+
+
+def gap_metadata(
+    gap: Tuple[int, int],
+    sample_rate: int,
+) -> Dict[str, Any]:
+    """Serialize a gap for the web and JSON metadata formats."""
+    s, e = int(gap[0]), int(gap[1])
+    return {
+        "start": s,
+        "end": e,
+        "start_sample": s,
+        "end_sample": e,
+        "start_s": round(float(s) / sample_rate, 4),
+        "end_s": round(float(e) / sample_rate, 4),
+        "duration_ms": round(float(e - s) * 1000.0 / sample_rate, 4),
+    }
+
+
+def plan_adaptive_windows(
+    long_gaps: List[Tuple[int, int]],
+    mask: np.ndarray,
+    signal_length: int,
+    sample_rate: int,
+    preferred_window_s: float = 5.0,
+    minimum_window_s: float = 1.0,
+    maximum_window_s: float = 10.0,
+    minimum_clean_context_s: float = 0.25,
+    merge_strategy: str = "adaptive",
+) -> Tuple[List[AdaptiveWindow], List[Dict[str, Any]]]:
+    """Generate minimal, context-valid windows around DPAI gaps."""
+    if not long_gaps:
+        return [], []
+
+    arr_mask = np.asarray(mask).reshape(-1)
+    if len(arr_mask) != signal_length:
+        raise ValueError("sample mask length must equal signal length")
+
+    context_samples = max(1, round(minimum_clean_context_s * sample_rate))
+    preferred_samples = round(preferred_window_s * sample_rate)
+    minimum_samples = round(minimum_window_s * sample_rate)
+    maximum_samples = max(1, round(maximum_window_s * sample_rate))
+
+    sorted_gaps = sorted(set((int(s), int(e)) for s, e in long_gaps if e > s))
+    feasible: List[Tuple[int, int]] = []
+    infeasible: List[Dict[str, Any]] = []
+
+    for gap in sorted_gaps:
+        s, e = gap
+        if s < 0 or e > signal_length or s >= e:
+            infeasible.append({
+                "start": s, "end": e, "reason": "out_of_bounds",
+                "left_context_available": False, "right_context_available": False,
+            })
+            continue
+
+        left_available = s >= context_samples and np.all(arr_mask[s - context_samples:s] == 1.0)
+        right_available = e + context_samples <= signal_length and np.all(arr_mask[e:e + context_samples] == 1.0)
+        if not (left_available and right_available):
+            infeasible.append({
+                "start": s, "end": e, "reason": "insufficient_clean_context",
+                "left_context_available": bool(left_available),
+                "right_context_available": bool(right_available),
+            })
+            continue
+
+        minimum_span = (e + context_samples) - (s - context_samples)
+        if minimum_span > maximum_samples:
+            infeasible.append({
+                "start": s, "end": e, "reason": "minimum_window_exceeds_maximum",
+                "left_context_available": True, "right_context_available": True,
+            })
+            continue
+        feasible.append(gap)
+
+    if not feasible:
+        return [], infeasible
+
+    groups: List[List[Tuple[int, int]]] = []
+    current = [feasible[0]]
+
+    for gap in feasible[1:]:
+        first_s = current[0][0]
+        last_e = gap[1]
+        combined_start = max(0, first_s - context_samples)
+        combined_end = min(signal_length, last_e + context_samples)
+        combined_length = combined_end - combined_start
+
+        can_merge = (
+            merge_strategy == "adaptive"
+            and combined_length <= preferred_samples
+            and combined_length <= maximum_samples
+        )
+        if can_merge:
+            current.append(gap)
+        else:
+            groups.append(current)
+            current = [gap]
+    if current:
+        groups.append(current)
+
+    windows: List[AdaptiveWindow] = []
+    for group in groups:
+        minimum_start = max(0, group[0][0] - context_samples)
+        minimum_end = min(signal_length, group[-1][1] + context_samples)
+        minimum_span = minimum_end - minimum_start
+        target_length = max(preferred_samples, minimum_samples, minimum_span)
+        target_length = min(target_length, maximum_samples)
+        target_length = min(target_length, signal_length)
+
+        center = (minimum_start + minimum_end) / 2.0
+        start = int(round(center - target_length / 2.0))
+        start = max(0, min(start, signal_length - target_length))
+        end = start + target_length
+        start = min(start, minimum_start)
+        end = max(end, minimum_end)
+        if end - start > maximum_samples:
+            start = minimum_start
+            end = minimum_end
+        start = max(0, start)
+        end = min(signal_length, end)
+
+        left_available = bool(group[0][0] >= context_samples
+                             and np.all(arr_mask[group[0][0] - context_samples:group[0][0]] == 1.0))
+        right_available = bool(group[-1][1] + context_samples <= signal_length
+                              and np.all(arr_mask[group[-1][1]:group[-1][1] + context_samples] == 1.0))
+        windows.append(AdaptiveWindow(
+            start=start,
+            end=end,
+            gaps=list(group),
+            individually_planned=len(group) == 1,
+            left_context_available=left_available,
+            right_context_available=right_available,
+        ))
+
+    return windows, infeasible
 
 
 def classify_short_gaps(
@@ -333,9 +508,12 @@ def inpaint_long(
         long_cfg.update(options)
 
     window_s = float(long_cfg.get("window_s", 5.0))
-    context_s = float(long_cfg.get("context_s", 0.5))
     lpc_max_gap_ms = float(long_cfg.get("lpc_max_gap_ms", 40.0))
     crossfade_ms = float(long_cfg.get("crossfade_ms", 8.0))
+    minimum_window_s = float(long_cfg.get("min_window_s", 1.0))
+    maximum_window_s = float(long_cfg.get("max_window_s", 10.0))
+    minimum_clean_context_s = float(long_cfg.get("context_s", 0.25))
+    merge_strategy = str(long_cfg.get("merge_strategy", "adaptive"))
 
     crossfade_samples = max(1, round(crossfade_ms * sample_rate / 1000.0))
 
@@ -396,19 +574,19 @@ def inpaint_long(
             epochs=epochs,
         )
 
-    # 4. Plan windows from LONG gaps only. Short gaps never influence planning.
-    # Single window shortcut if clip <= window length
-    window_samples = round(window_s * sample_rate)
-    if N <= window_samples:
-        windows = [(0, N, list(long_gaps))]
-    else:
-        windows = plan_windows(
-            long_gaps,
-            signal_length=N,
-            sample_rate=sample_rate,
-            window_s=window_s,
-            context_s=context_s,
-        )
+    # 4. Plan mask-aware adaptive windows from the DPAI gap set.
+    adaptive_windows, context_infeasible = plan_adaptive_windows(
+        long_gaps=long_gaps,
+        mask=sample_mask,
+        signal_length=N,
+        sample_rate=sample_rate,
+        preferred_window_s=window_s,
+        minimum_window_s=minimum_window_s,
+        maximum_window_s=maximum_window_s,
+        minimum_clean_context_s=minimum_clean_context_s,
+        merge_strategy=merge_strategy,
+    )
+    windows = [(w.start, w.end, w.gaps) for w in adaptive_windows]
 
     logger.info(
         "Long-audio windows stage: %d windows planned from %d large gaps.",
@@ -480,10 +658,12 @@ def inpaint_long(
             overlap_start = max(s, w_start)
             overlap_end = min(e, w_end)
             if overlap_start < overlap_end:
-                assigned_to_this_win.append((overlap_start, overlap_end))
-                covered_by_dpai[overlap_start:overlap_end] = True
-                if (s, e) in short_gaps:
-                    small_gaps_inside_windows.add((s, e))
+                if gap_has_clean_context((s, e), sample_mask,
+                                         max(1, round(minimum_clean_context_s * sample_rate))):
+                    assigned_to_this_win.append((overlap_start, overlap_end))
+                    covered_by_dpai[overlap_start:overlap_end] = True
+                    if (s, e) in short_gaps:
+                        small_gaps_inside_windows.add((s, e))
 
         # A window may include no missing samples only if its source mask is
         # inconsistent with the planned large-gap list; skip it safely.
@@ -512,6 +692,7 @@ def inpaint_long(
                     callbacks("dpai", k, len(windows), ep, total_ep)
 
         win_seed = seed + k
+        window_t0 = time.perf_counter()
         if cluster_results is not None:
             cluster_result = cluster_results[k]
             win_waveform = np.asarray(cluster_result["wave"], dtype=np.float32)
@@ -529,6 +710,7 @@ def inpaint_long(
             win_waveform = win_result.waveform
             win_loss = win_result.loss_history
             win_n_params = win_result.n_params
+        window_runtime_s = time.perf_counter() - window_t0
 
         loss_histories.append(win_loss)
         n_params = win_n_params
@@ -546,10 +728,21 @@ def inpaint_long(
             "window_index": k,
             "start": int(w_start),
             "end": int(w_end),
+            "start_sample": int(w_start),
+            "end_sample": int(w_end),
             "start_s": round(float(w_start) / sample_rate, 4),
             "end_s": round(float(w_end) / sample_rate, 4),
+            "duration_s": round(float(w_end - w_start) / sample_rate, 4),
             "n_gaps": len(assigned_to_this_win),
-            "gaps": [[int(s), int(e)] for s, e in assigned_to_this_win],
+            "gaps": [gap_metadata(gap, sample_rate) for gap in assigned_to_this_win],
+            "grouped": not adaptive_windows[k].individually_planned,
+            "left_context_available": adaptive_windows[k].left_context_available,
+            "right_context_available": adaptive_windows[k].right_context_available,
+            "runtime_s": round(window_runtime_s, 4),
+            "n_params": int(win_n_params),
+            "final_loss": round(float(win_loss[-1]), 8) if win_loss else None,
+            "epochs": int(epochs),
+            "loss_history": [round(float(loss), 10) for loss in win_loss],
         })
 
     logger.info(
@@ -601,4 +794,9 @@ def inpaint_long(
         runtime_s=runtime_s,
         seed=seed,
         epochs=epochs,
+        context_infeasible_gaps=context_infeasible,
+        estimated_processing_s=sum(
+            (float(w["duration_s"]) for w in windows_meta),
+            0.0,
+        ),
     )

@@ -110,6 +110,7 @@ export const api = {
     formData.append('preset', request.preset)
     if (request.epochs !== undefined) {
       formData.append('epochs', String(request.epochs))
+      formData.append('epochs_per_window', String(request.epochs))
     }
     formData.append('seed', String(request.seed))
     formData.append('preserve_observed', String(request.preserve_observed))

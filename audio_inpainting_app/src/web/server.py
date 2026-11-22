@@ -38,11 +38,12 @@ from src.pipeline.inpainter import DPAIInpainter, InpaintResult
 from src.pipeline.io import make_run_id, save_run
 from src.pipeline.long_inpaint import (
     inpaint_long,
+    gap_metadata,
     mask_to_gaps,
     plan_windows,
     split_gaps,
 )
-from src.utils.visualization import plot_spectrogram
+from src.utils.visualization import plot_spectrogram, plot_window_loss_curves
 from src.utils.preview import render_preview as _render_preview
 
 logger = logging.getLogger("dpai.web")
@@ -239,6 +240,10 @@ class Job:
     metrics: Optional[Dict[str, Any]] = None
     long_audio: str = "auto"
     window_s: float = 5.0
+    min_window_s: float = 1.0
+    max_window_s: float = 10.0
+    context_s: float = 0.25
+    merge_strategy: str = "adaptive"
     lpc_max_gap_ms: float = 40.0
     max_seconds: float = 10.0
     max_seconds_long: float = 120.0
@@ -551,6 +556,10 @@ class JobManager:
                         )[1]) if self.executor is not None else None,
                         options={
                             "window_s": job.window_s,
+                            "min_window_s": job.min_window_s,
+                            "max_window_s": job.max_window_s,
+                            "context_s": job.context_s,
+                            "merge_strategy": job.merge_strategy,
                             "lpc_max_gap_ms": job.lpc_max_gap_ms,
                             "max_windows": job.max_windows,
                             "job_id": job.id,
@@ -563,7 +572,15 @@ class JobManager:
                     win = int(stft_cfg.get("win_length", 600))
                     recon_tensor = torch.from_numpy(long_result.waveform.astype(np.float32))
                     final_spec = compute_stft(recon_tensor, n_fft=n_fft, hop_length=hop, win_length=win).numpy()
-                    flat_loss = [l for h in long_result.loss_histories for l in h] if long_result.loss_histories else [0.0]
+                    if long_result.loss_histories:
+                        window_loss_history = [
+                            [float(loss) for loss in history]
+                            for history in long_result.loss_histories
+                        ]
+                        flat_loss: List[float] = []
+                    else:
+                        window_loss_history = []
+                        flat_loss = [0.0]
 
                     result = InpaintResult(
                         waveform=long_result.waveform,
@@ -651,18 +668,44 @@ class JobManager:
                     self.registry[run_dir.name] = job
 
                 if qualifies_long and long_result is not None:
+                    if long_result.loss_histories:
+                        plot_window_loss_curves(
+                            long_result.loss_histories,
+                            out_path=run_dir / "loss_curve.png",
+                        )
                     long_audio_dict = {
                         "windows": long_result.windows,
-                        "lpc_gaps": [[int(s), int(e)] for s, e in long_result.lpc_gaps],
-                        "dpai_gaps": [[int(s), int(e)] for s, e in long_result.dpai_gaps],
+                        "lpc_gaps": [
+                            gap_metadata(gap, sr)
+                            for gap in long_result.lpc_gaps
+                        ],
+                        "dpai_gaps": [
+                            gap_metadata(gap, sr)
+                            for gap in long_result.dpai_gaps
+                        ],
                         "params": {
                             "n_windows": len(long_result.windows),
+                            "total_duration_s": round(len(corrupted) / sr, 4),
                             "window_s": float(job.window_s),
+                            "epochs_per_window": int(long_result.epochs),
+                            "min_window_s": float(job.min_window_s),
+                            "max_window_s": float(job.max_window_s),
+                            "context_s": float(job.context_s),
+                            "merge_strategy": job.merge_strategy,
                             "lpc_max_gap_ms": float(job.lpc_max_gap_ms),
-                            "context_s": float(job.cfg.get("long_audio", {}).get("context_s", 0.5)),
                             "crossfade_ms": float(job.cfg.get("long_audio", {}).get("crossfade_ms", 8.0)),
                             "lpc_skip_if_in_window": bool(job.cfg.get("long_audio", {}).get("lpc_skip_if_in_window", True)),
                         },
+                        "summary": {
+                            "total_duration_s": round(len(corrupted) / sr, 4),
+                            "total_missing_regions": len(mask_to_gaps(job.mask)),
+                            "dpai_gaps": len(long_result.dpai_gaps),
+                            "generated_dpai_windows": len(long_result.windows),
+                            "total_dpai_duration_s": round(sum(w["duration_s"] for w in long_result.windows), 4),
+                            "context_infeasible_gaps": len(long_result.context_infeasible_gaps),
+                            "estimated_dpai_processing_s": round(long_result.estimated_processing_s, 4),
+                        },
+                        "context_infeasible_gaps": long_result.context_infeasible_gaps,
                         "runtime_s": round(long_result.runtime_s, 3),
                     }
                     (run_dir / "long_audio.json").write_text(json.dumps(long_audio_dict, indent=2), encoding="utf-8")
@@ -915,11 +958,16 @@ def create_app(
         gap_ms: float = Form(200.0),
         preset: str = Form("balanced"),
         epochs: Optional[int] = Form(None),
+        epochs_per_window: Optional[int] = Form(None),
         seed: int = Form(0),
         preserve_observed: bool = Form(True),
         reference: Optional[UploadFile] = File(None),
         long_audio: str = Form("auto"),
         window_s: float = Form(5.0),
+        min_window_s: float = Form(1.0),
+        max_window_s: float = Form(10.0),
+        context_s: float = Form(0.25),
+        merge_strategy: str = Form("adaptive"),
         lpc_max_gap_ms: float = Form(40.0),
     ) -> Dict[str, Any]:
         """Submit a new inpainting job."""
@@ -939,11 +987,26 @@ def create_app(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"window_s ({window_s}) must be between 3.0 and 10.0 seconds.",
             )
+        if min_window_s < 0.1 or min_window_s > 10.0:
+            raise HTTPException(status_code=400, detail="min_window_s must be between 0.1 and 10.0 seconds.")
+        if max_window_s < min_window_s or max_window_s > 120.0:
+            raise HTTPException(status_code=400, detail="max_window_s must cover min_window_s and not exceed 120 seconds.")
+        if context_s <= 0.0:
+            raise HTTPException(status_code=400, detail="context_s must be greater than 0 seconds.")
+        if merge_strategy not in ("adaptive", "separate"):
+            raise HTTPException(status_code=400, detail="merge_strategy must be 'adaptive' or 'separate'.")
         if lpc_max_gap_ms < 0.0 or lpc_max_gap_ms > 80.0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"lpc_max_gap_ms ({lpc_max_gap_ms}) must be between 0.0 and 80.0 ms.",
             )
+        if epochs_per_window is not None and (epochs_per_window < 1 or epochs_per_window > 10000):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="epochs_per_window must be between 1 and 10000.",
+            )
+        if epochs_per_window is not None:
+            epochs = epochs_per_window
 
         sr = int(app.state.base_cfg["audio"]["sample_rate"])
         max_duration = float(app.state.max_seconds)
@@ -1095,16 +1158,17 @@ def create_app(
                 sample_rate=sr,
                 lpc_max_gap_ms=float(lpc_max_gap_ms),
             )
-            if len(wav) <= round(float(window_s) * sr):
-                planned_windows = 1 if long_gaps else 0
-            else:
-                planned_windows = len(plan_windows(
-                    long_gaps,
-                    signal_length=len(wav),
-                    sample_rate=sr,
-                    window_s=float(window_s),
-                    context_s=0.5,
-                ))
+            planned_windows = len(plan_windows(
+                long_gaps,
+                signal_length=len(wav),
+                sample_rate=sr,
+                window_s=float(window_s),
+                context_s=float(context_s),
+                mask=mask,
+                min_window_s=float(min_window_s),
+                max_window_s=float(max_window_s),
+                merge_strategy=merge_strategy,
+            ))
             if planned_windows > int(app.state.max_windows):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -1128,6 +1192,11 @@ def create_app(
         cfg["long_audio"] = {
             "enabled": long_audio,
             "window_s": float(window_s),
+            "epochs_per_window": int(epochs) if epochs is not None else None,
+            "min_window_s": float(min_window_s),
+            "max_window_s": float(max_window_s),
+            "context_s": float(context_s),
+            "merge_strategy": merge_strategy,
             "lpc_max_gap_ms": float(lpc_max_gap_ms),
         }
 
@@ -1147,6 +1216,10 @@ def create_app(
             warnings=warnings,
             long_audio=long_audio,
             window_s=float(window_s),
+            min_window_s=float(min_window_s),
+            max_window_s=float(max_window_s),
+            context_s=float(context_s),
+            merge_strategy=merge_strategy,
             lpc_max_gap_ms=float(lpc_max_gap_ms),
             max_seconds=max_duration,
             max_seconds_long=max_duration_long,

@@ -153,6 +153,34 @@ def plot_loss_curves(
     return fig
 
 
+def plot_window_loss_curves(
+    window_losses: Sequence[Sequence[float]],
+    out_path: Optional[str | Path] = None,
+) -> plt.Figure:
+    """Plot one independently initialized curve for each DPAI window."""
+    fig, ax = plt.subplots(figsize=(8, 4))
+    for window_index, train_loss in enumerate(window_losses):
+        if train_loss:
+            ax.plot(
+                np.arange(len(train_loss)),
+                train_loss,
+                label=f"Window {window_index + 1}",
+                alpha=0.85,
+            )
+    ax.set_yscale("log")
+    ax.set_xlabel("Epoch within window")
+    ax.set_ylabel("MSE")
+    ax.set_title("Deep-prior optimization by DPAI window")
+    ax.grid(True, which="both", alpha=0.25)
+    if window_losses:
+        ax.legend()
+    fig.tight_layout()
+    if out_path is not None:
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(str(out_path), dpi=_DPI)
+    return fig
+
+
 def plot_comparison_curves(
     plain_train_loss: Optional[Sequence[float]] = None,
     plain_val_loss: Optional[Sequence[Tuple[int, float]]] = None,

@@ -419,12 +419,41 @@ export function ExperimentResultsPage() {
                 <div>
                   <CardTitle>Long Audio Windows &amp; Gap Breakdown</CardTitle>
                   <p className="text-xs text-[var(--fg-muted)] mt-1">
-                    {longAudio.windows.length} sliding window{longAudio.windows.length !== 1 ? 's' : ''} • {longAudio.dpai_gaps.length} DPAI gap{longAudio.dpai_gaps.length !== 1 ? 's' : ''} • {longAudio.lpc_gaps.length} LPC gap{longAudio.lpc_gaps.length !== 1 ? 's' : ''} • Window size {longAudio.params.window_s}s
+                    {longAudio.windows.length} adaptive window{longAudio.windows.length !== 1 ? 's' : ''} • {longAudio.dpai_gaps.length} DPAI gap{longAudio.dpai_gaps.length !== 1 ? 's' : ''} • {longAudio.lpc_gaps.length} LPC gap{longAudio.lpc_gaps.length !== 1 ? 's' : ''} • {longAudio.params.epochs_per_window} epochs/window • Preferred size {longAudio.params.window_s}s
                   </p>
                 </div>
                 <Badge variant="outline">Long Audio</Badge>
               </CardHeader>
               <CardContent className="space-y-6">
+                {longAudio.summary && (
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    {[
+                      ['Missing Regions', longAudio.summary.total_missing_regions],
+                      ['DPAI Windows', longAudio.summary.generated_dpai_windows],
+                      ['DPAI Audio', `${longAudio.summary.total_dpai_duration_s.toFixed(2)}s`],
+                      ['Context Infeasible', longAudio.summary.context_infeasible_gaps],
+                    ].map(([label, value]) => (
+                      <div key={String(label)} className="p-3 rounded-md bg-[var(--raised)] border border-[var(--border)]">
+                        <p className="text-xs text-[var(--fg-muted)]">{label}</p>
+                        <p className="mt-1 font-mono font-semibold text-[var(--fg)]">{value}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {longAudio.context_infeasible_gaps?.length > 0 && (
+                  <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+                    <p className="font-semibold text-amber-700 dark:text-amber-300">Context-infeasible gaps</p>
+                    <div className="mt-2 space-y-1 font-mono text-xs">
+                      {longAudio.context_infeasible_gaps.map((gap, idx) => (
+                        <p key={`${gap.start}-${gap.end}-${idx}`}>
+                          [{gap.start}, {gap.end}] — {gap.reason}; left context: {gap.left_context_available ? 'yes' : 'no'}; right context: {gap.right_context_available ? 'yes' : 'no'}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Timeline Visualization */}
                 <div>
                   <div className="flex items-center justify-between text-xs text-[var(--fg-muted)] mb-2 font-mono">
@@ -514,6 +543,9 @@ export function ExperimentResultsPage() {
                         <TableHead>Duration</TableHead>
                         <TableHead>Gaps Covered</TableHead>
                         <TableHead>Sample Range</TableHead>
+                        <TableHead>Context</TableHead>
+                        <TableHead>Grouping</TableHead>
+                        <TableHead>Result</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -522,8 +554,23 @@ export function ExperimentResultsPage() {
                           <TableCell className="font-semibold font-mono">#{idx + 1}</TableCell>
                           <TableCell className="font-mono">{win.start_s.toFixed(2)}s – {win.end_s.toFixed(2)}s</TableCell>
                           <TableCell className="font-mono">{(win.end_s - win.start_s).toFixed(2)}s</TableCell>
-                          <TableCell className="font-mono">{win.n_gaps} gap{win.n_gaps !== 1 ? 's' : ''}</TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {win.n_gaps} gap{win.n_gaps !== 1 ? 's' : ''}
+                            {win.gaps?.length > 0 && (
+                              <span className="block mt-1 text-[var(--fg-muted)]">
+                                {win.gaps.map(gap => `${gap.start_s.toFixed(2)}–${gap.end_s.toFixed(2)}s`).join(', ')}
+                              </span>
+                            )}
+                          </TableCell>
                           <TableCell className="font-mono text-xs text-[var(--fg-muted)]">[{win.start_sample}, {win.end_sample}]</TableCell>
+                          <TableCell className="text-xs">
+                            L {win.left_context_available ? '✓' : '×'} / R {win.right_context_available ? '✓' : '×'}
+                          </TableCell>
+                          <TableCell className="text-xs">{win.grouped ? 'Grouped' : 'Individual'}</TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {win.runtime_s != null ? `${win.runtime_s.toFixed(2)}s` : '—'}
+                            {win.final_loss != null ? ` • loss ${win.final_loss.toFixed(6)}` : ''}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

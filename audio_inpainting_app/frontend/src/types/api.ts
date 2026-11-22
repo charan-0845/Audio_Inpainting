@@ -37,6 +37,7 @@ export interface JobSubmitRequest {
   gap_ms?: number
   preset: string
   epochs?: number
+  epochs_per_window?: number
   seed: number
   preserve_observed: boolean
   reference?: File
@@ -74,14 +75,28 @@ export interface LongAudioWindowMeta {
   window_index: number
   start_sample: number
   end_sample: number
+  start: number
+  end: number
   start_s: number
   end_s: number
+  duration_s: number
   n_gaps: number
+  gaps: LongAudioGapMeta[]
+  grouped: boolean
+  left_context_available: boolean
+  right_context_available: boolean
+  runtime_s: number
+  n_params: number
+  final_loss: number | null
+  epochs: number
+  loss_history: number[]
 }
 
 export interface LongAudioGapMeta {
   start_sample: number
   end_sample: number
+  start: number
+  end: number
   start_s: number
   end_s: number
   duration_ms: number
@@ -91,8 +106,25 @@ export interface LongAudioMeta {
   windows: LongAudioWindowMeta[]
   lpc_gaps: LongAudioGapMeta[]
   dpai_gaps: LongAudioGapMeta[]
+  context_infeasible_gaps: Array<{
+    start: number
+    end: number
+    reason: string
+    left_context_available: boolean
+    right_context_available: boolean
+  }>
+  summary: {
+    total_duration_s: number
+    total_missing_regions: number
+    dpai_gaps: number
+    generated_dpai_windows: number
+    total_dpai_duration_s: number
+    context_infeasible_gaps: number
+    estimated_dpai_processing_s: number
+  }
   params: {
     window_s: number
+    epochs_per_window: number
     lpc_max_gap_ms: number
     n_windows: number
     total_duration_s: number
